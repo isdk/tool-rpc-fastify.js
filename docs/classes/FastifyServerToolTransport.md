@@ -6,7 +6,7 @@
 
 # Class: FastifyServerToolTransport
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:61](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L61)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:61](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L61)
 
 A concrete server transport implementation for Fastify.
 
@@ -28,7 +28,7 @@ prefixes on one transport never clobber each other.
 
 > **new FastifyServerToolTransport**(`server?`, `options?`): `FastifyServerToolTransport`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:73](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L73)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:73](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L73)
 
 #### Parameters
 
@@ -107,7 +107,7 @@ Defined in: packages/tool-rpc/dist/server-manager-D7aYswzj.d.ts:859
 
 > `protected` `optional` **listenAddr?**: `string`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:68](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L68)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:68](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L68)
 
 Physical listen address, recorded once `_start()` has resolved.
 
@@ -143,7 +143,7 @@ Defined in: packages/tool-rpc/dist/server-manager-D7aYswzj.d.ts:858
 
 > **registry**: `any`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:64](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L64)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:64](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L64)
 
 The tool registry used for dispatching RPC calls on this transport.
 
@@ -167,7 +167,7 @@ prefix -> 逻辑路由声明。多前缀 / 多注册表共用同一份簿记。
 
 > `protected` **rpcPrefix**: `string` = `''`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:66](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L66)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:66](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L66)
 
 Path prefix (without trailing slash, '/' for root) of the last RPC route claimed.
 
@@ -177,7 +177,7 @@ Path prefix (without trailing slash, '/' for root) of the last RPC route claimed
 
 > **server**: `FastifyInstance`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:62](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L62)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:62](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L62)
 
 ## Methods
 
@@ -185,7 +185,7 @@ Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:62](https://github.c
 
 > **\_start**(`options?`): `Promise`\<`any`\>
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:167](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L167)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:167](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L167)
 
 #### Parameters
 
@@ -207,7 +207,7 @@ Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:167](https://github.
 
 > **addDiscoveryHandler**(`apiUrl`, `handler`, `options?`): `void`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:107](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L107)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:107](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L107)
 
 #### Parameters
 
@@ -237,7 +237,7 @@ Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:107](https://github.
 
 > **addRpcHandler**(`apiUrl`, `options?`): `void`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:130](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L130)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:130](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L130)
 
 #### Parameters
 
@@ -263,7 +263,7 @@ Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:130](https://github.
 
 > `protected` **apiUrlIdentity**(): `string`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:209](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L209)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:209](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L209)
 
 Declared identity from `apiUrl`: the physical base this transport serves, as
 a canonical URI (scheme + authority, no path). Transports sharing one Fastify
@@ -352,7 +352,7 @@ Defined in: packages/tool-rpc/dist/server-manager-D7aYswzj.d.ts:941
 
 > `protected` **defaultBindOptions**(): `BindOptions`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:228](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L228)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:228](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L228)
 
 What `_start()` falls back to when the caller declares nothing. These have
 to match it exactly: a bare path prefix carries no authority at all, so the
@@ -396,7 +396,7 @@ Defined in: packages/tool-rpc/dist/server-manager-D7aYswzj.d.ts:872
 
 > **getBoundAddress**(): `string` \| `undefined`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:237](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L237)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:237](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L237)
 
 Observed bind: the address reported by `listen()`, only available after
 start(). Use it for logs and to complete the declared identity when the port
@@ -437,7 +437,7 @@ Defined in: packages/tool-rpc/dist/server-manager-D7aYswzj.d.ts:910
 
 > **getRaw**(): `any`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:273](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L273)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:273](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L273)
 
 #### Returns
 
@@ -473,7 +473,7 @@ Defined in: packages/tool-rpc/dist/server-manager-D7aYswzj.d.ts:916
 
 > **mount**(`serverTools`, `apiPrefix`, `options?`): `void`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:98](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L98)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:98](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L98)
 
 Convenience: mount the RPC + discovery routes for a tools registry
 under the given API prefix.
@@ -506,7 +506,7 @@ mounted prefix does ('replace' by default, 'throw' for Fastify's error).
 
 > `protected` **onDuplicateRoute**(`prefix`, `kind`): `never`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:158](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L158)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:158](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L158)
 
 `remount: 'throw'` hook: re-register the route so find-my-way raises its own
 `FST_ERR_DUPLICATED_ROUTE` rather than a parallel error type. If the router
@@ -662,7 +662,7 @@ Defined in: packages/tool-rpc/dist/server-manager-D7aYswzj.d.ts:949
 
 > `protected` **sendRpcResponse**(`rpcRes`, `reply`): `Promise`\<`void`\>
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:343](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L343)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:343](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L343)
 
 Write the normalized ToolRpcResponse back through the Fastify reply.
 
@@ -736,7 +736,7 @@ Defined in: packages/tool-rpc/dist/server-manager-D7aYswzj.d.ts:917
 
 > **stop**(`force?`): `Promise`\<`void`\>
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:267](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L267)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:267](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L267)
 
 #### Parameters
 
@@ -758,7 +758,7 @@ Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:267](https://github.
 
 > `protected` **toListenAddr**(`listenResult`): `string` \| `undefined`
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:255](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L255)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:255](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L255)
 
 Observed bind, as a URI. Fastify resolves a TCP listen with a URL and a
 unix-socket listen with the bare socket path (实测), so the string branch has
@@ -830,7 +830,7 @@ apiUrl（完整 URL）或路径前缀 -> 归一化前缀（无尾斜杠，根为
 
 > `protected` **toRpcRequest**(`request`, `reply?`): `Promise`\<`ToolRpcRequest`\>
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:280](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L280)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:280](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L280)
 
 Normalize a Fastify request into the standard ToolRpcRequest envelope.
 
@@ -858,7 +858,7 @@ Normalize a Fastify request into the standard ToolRpcRequest envelope.
 
 > `protected` **waitForReply**(`reply`): `Promise`\<`void`\>
 
-Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:389](https://github.com/isdk/ai-tool-fastify.js/blob/519ea32c3f209fbd310a8322c4afcadead4d2d8e/src/fastify-server.ts#L389)
+Defined in: [packages/ai-tool-fastify/src/fastify-server.ts:389](https://github.com/isdk/tool-rpc-fastify.js/blob/f3f6a237be2caa58083212f4432489837b466b11/src/fastify-server.ts#L389)
 
 #### Parameters
 
