@@ -405,7 +405,7 @@ describe('fastifyServerToolTransport: physical address and route audit', () => {
 
   it('declares the unix socket it listens on as its base, and serves over it', async () => {
     const mgr = RpcTransportManager.instance;
-    const socket = `/tmp/ai-tool-fastify-${process.pid}-${Date.now()}.sock`;
+    const socket = `/tmp/tool-rpc-fastify-${process.pid}-${Date.now()}.sock`;
     const t = new FastifyServerToolTransport(fastify());
     t.mount(RegA, '/api');
     try {

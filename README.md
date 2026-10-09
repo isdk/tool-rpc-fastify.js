@@ -1,17 +1,17 @@
-# @isdk/ai-tool-fastify
+# @isdk/tool-rpc-fastify
 
 **中文文档：** [README.cn.md](README.cn.md) · **English:** README.md
 
 > ✨ **Fastify HTTP server transport for the `ToolFunc` framework**
 > Expose your tools over HTTP with Fastify, and call them from any `@isdk/tool-rpc` client as if they were local functions.
 
-[![npm version](https://img.shields.io/npm/v/@isdk/ai-tool-fastify.svg?style=flat-square)](https://www.npmjs.com/package/@isdk/ai-tool-fastify)
+[![npm version](https://img.shields.io/npm/v/@isdk/tool-rpc-fastify.svg?style=flat-square)](https://www.npmjs.com/package/@isdk/tool-rpc-fastify)
 [![Vitest Tests](https://img.shields.io/badge/tests-vitest-green?style=flat-square)](https://vitest.dev/)
 [![TypeScript](https://img.shields.io/badge/types-TypeScript-blue?style=flat-square)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](./LICENSE-MIT)
 
 ```bash
-npm install @isdk/ai-tool-fastify fastify
+npm install @isdk/tool-rpc-fastify fastify
 ```
 
 `fastify` is a peer dependency (`*`, tested against Fastify 5). `@isdk/tool-rpc` ships as a runtime dependency of this package.
@@ -35,7 +35,7 @@ Built on [`@isdk/tool-rpc`](https://github.com/isdk/tool-rpc) — client-server 
 
 ```typescript
 import { ServerTools } from '@isdk/tool-rpc'
-import { FastifyServerToolTransport } from '@isdk/ai-tool-fastify'
+import { FastifyServerToolTransport } from '@isdk/tool-rpc-fastify'
 
 // 1. Register tools on the server side
 ServerTools.register({
@@ -108,7 +108,7 @@ Pass your own instance; the transport only adds routes to it.
 ```typescript
 import fastify from 'fastify'
 import { ServerTools } from '@isdk/tool-rpc'
-import { FastifyServerToolTransport } from '@isdk/ai-tool-fastify'
+import { FastifyServerToolTransport } from '@isdk/tool-rpc-fastify'
 
 const app = fastify({ logger: true })
 

@@ -1,4 +1,4 @@
-# Contributing — @isdk/ai-tool-fastify
+# Contributing — @isdk/tool-rpc-fastify
 
 本包只放 Fastify transport 自己的约定。传输层的通用规则（声明身份 vs 绑定观测、canonical URI 归一、unix socket 身份的编码约定、路由声明内核）见 [`../tool-rpc/CONTRIBUTING.md`](../tool-rpc/CONTRIBUTING.md)。
 

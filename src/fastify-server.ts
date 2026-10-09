@@ -45,7 +45,7 @@ export interface FastifyRpcHandlerOptions extends RouteShorthandOptions {
 }
 
 /** Key under which a route handler tags its request with its own route prefix. */
-const RPC_ROUTE_CTX = Symbol('ai-tool-fastify.rpcRoute');
+const RPC_ROUTE_CTX = Symbol('tool-rpc-fastify.rpcRoute');
 
 /**
  * A concrete server transport implementation for Fastify.

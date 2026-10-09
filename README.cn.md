@@ -1,17 +1,17 @@
-# @isdk/ai-tool-fastify
+# @isdk/tool-rpc-fastify
 
 **中文文档：** README.cn.md · **English:** [README.md](README.md)
 
 > ✨ **面向 `ToolFunc` 框架的 Fastify HTTP 服务端传输层**
 > 用 Fastify 把工具暴露为 HTTP 服务，`@isdk/tool-rpc` 客户端可以像调用本地函数一样调用它们。
 
-[![npm version](https://img.shields.io/npm/v/@isdk/ai-tool-fastify.svg?style=flat-square)](https://www.npmjs.com/package/@isdk/ai-tool-fastify)
+[![npm version](https://img.shields.io/npm/v/@isdk/tool-rpc-fastify.svg?style=flat-square)](https://www.npmjs.com/package/@isdk/tool-rpc-fastify)
 [![Vitest Tests](https://img.shields.io/badge/tests-vitest-green?style=flat-square)](https://vitest.dev/)
 [![TypeScript](https://img.shields.io/badge/types-TypeScript-blue?style=flat-square)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](./LICENSE-MIT)
 
 ```bash
-npm install @isdk/ai-tool-fastify fastify
+npm install @isdk/tool-rpc-fastify fastify
 ```
 
 `fastify` 是 peer 依赖（`*`，已针对 Fastify 5 验证）。`@isdk/tool-rpc` 作为本包的运行时依赖自动安装。
@@ -35,7 +35,7 @@ npm install @isdk/ai-tool-fastify fastify
 
 ```typescript
 import { ServerTools } from '@isdk/tool-rpc'
-import { FastifyServerToolTransport } from '@isdk/ai-tool-fastify'
+import { FastifyServerToolTransport } from '@isdk/tool-rpc-fastify'
 
 // 1. 在服务端注册工具
 ServerTools.register({
@@ -107,7 +107,7 @@ npx tsx client.ts
 ```typescript
 import fastify from 'fastify'
 import { ServerTools } from '@isdk/tool-rpc'
-import { FastifyServerToolTransport } from '@isdk/ai-tool-fastify'
+import { FastifyServerToolTransport } from '@isdk/tool-rpc-fastify'
 
 const app = fastify({ logger: true })
 

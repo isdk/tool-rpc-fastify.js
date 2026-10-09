@@ -1,11 +1,11 @@
 {
-  "name": "@isdk/ai-tool-fastify",
-  "version": "0.1.1",
+  "name": "@isdk/tool-rpc-fastify",
+  "version": "0.2.0",
   "author": "Riceball LEE <snowyu.lee@gmail.com>",
-  "homepage": "https://github.com/isdk/ai-tool-fastify.js",
+  "homepage": "https://github.com/isdk/tool-rpc-fastify.js",
   "repository": {
     "type": "git",
-    "url": "git://github.com/isdk/ai-tool-fastify.js.git"
+    "url": "git://github.com/isdk/tool-rpc-fastify.js.git"
   },
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -78,6 +78,9 @@
   ],
   "engines": {
     "node": ">=20.11.1"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "types": "./dist/index.d.ts"
 }
