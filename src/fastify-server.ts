@@ -1,4 +1,4 @@
-import type { RouteRemountMode, ServerTools, ToolRpcRequest, ToolRpcResponse } from '@isdk/tool-rpc';
+import type { BindOptions, RouteRemountMode, ServerTools, ToolRpcRequest, ToolRpcResponse } from '@isdk/tool-rpc';
 import type {
   FastifyInstance,
   FastifyReply,
@@ -7,7 +7,7 @@ import type {
   RouteShorthandOptions,
 } from 'fastify';
 
-import { RPC_HEADERS, RpcError, ServerToolTransport } from '@isdk/tool-rpc';
+import { canonicalPhysicalUri, RPC_HEADERS, RpcError, ServerToolTransport, unixSocketUri } from '@isdk/tool-rpc';
 
 import fastify from 'fastify';
 import { defaultsDeep } from 'lodash-es';
@@ -164,10 +164,25 @@ export class FastifyServerToolTransport extends ServerToolTransport {
     return super.onDuplicateRoute(prefix, kind);
   }
 
-  public async _start(options: { port?: number; host?: string } = {}): Promise<any> {
-    options = defaultsDeep({}, options, this.options, { port: 3000, host: '0.0.0.0' });
+  public async _start(options: BindOptions = {}): Promise<any> {
+    // 同一个 socket 路径在不同 transport / Node 版本里叫法不同（path / socketPath /
+    // socket）：声明身份三个都认，监听时也必须一样。声明了 socket 就不补默认
+    // 端口：port 与 path 同时给出时 Node 会丢掉 path，声明身份与真实监听就会错开。
+    const declared: BindOptions = defaultsDeep({}, options, this.options);
+    const listenOptions: Record<string, any> = { ...declared };
+    const socket = listenOptions.path ?? listenOptions.socketPath ?? listenOptions.socket;
+    if (socket) {
+      listenOptions.path = String(socket);
+      delete listenOptions.port;
+      delete listenOptions.host;
+    } else {
+      // Fastify 只认 path，port 必须是数（options 里可能是环境变量那种字符串）
+      listenOptions.port = Number(listenOptions.port ?? this.defaultBindOptions().port);
+    }
+    delete listenOptions.socketPath;
+    delete listenOptions.socket;
     try {
-      const result = await this.server.listen(options);
+      const result = await this.server.listen(listenOptions);
       this.listenAddr = this.toListenAddr(result);
       console.log(`[FastifyServerTransport] Server listening on ${result}`);
       return result;
@@ -180,33 +195,70 @@ export class FastifyServerToolTransport extends ServerToolTransport {
   }
 
   /**
-   * Physical base this transport serves. Transports sharing one Fastify instance
-   * (or one URL origin) share an address, which is what RpcTransportManager's
+   * Declared identity from `apiUrl`: the physical base this transport serves, as
+   * a canonical URI (scheme + authority, no path). Transports sharing one Fastify
+   * instance (or one URL origin) share a base, which is what RpcTransportManager's
    * route-conflict audit keys on. The base class returns `apiUrl`, which carries
    * the path and therefore hides real conflicts.
+   *
+   * Available before start(). It only changes when the caller *declares* a bind
+   * through start() options (see applyBindOptions); an OS-assigned port (0) never
+   * moves it, so the audit key stays queryable across the start boundary.
+   * When apiUrl has no URL form (a bare path prefix), a synthetic key stands in.
    */
-  public getListenAddr(): string | string[] {
-    if (this.listenAddr) {return this.listenAddr;}
+  protected apiUrlIdentity(): string {
     if (/^https?:\/\//i.test(this.apiUrl || '')) {
-      return new URL(this.apiUrl as string).origin;
+      // 与 HttpServerToolTransport 用同一个归一化实现，两边才能对上 key：
+      // 回环别名（127.0.0.1 / [::1] / localhost）、默认端口、尾斜杠全部归一。
+      return canonicalPhysicalUri(this.apiUrl as string);
     }
+    // 没有 URL 表示（只共享一个 in-process 实例）：造一个 URI 代替，
+    // scheme 就是它的命名空间。
     return FastifyServerToolTransport.instanceKey(this.server);
+  }
+
+  /**
+   * What `_start()` falls back to when the caller declares nothing. These have
+   * to match it exactly: a bare path prefix carries no authority at all, so the
+   * bind (options plus these defaults) is the only statement about the physical
+   * base there is. Without it such a transport stays keyed on the instance
+   * placeholder and can never be compared against an HTTP transport on the same
+   * port — or share that port's socket.
+   */
+  protected defaultBindOptions(): BindOptions {
+    return { port: 3000, host: '0.0.0.0' };
+  }
+
+  /**
+   * Observed bind: the address reported by `listen()`, only available after
+   * start(). Use it for logs and to complete the declared identity when the port
+   * was assigned by the OS. Never an audit or pool key.
+   */
+  public getBoundAddress(): string | undefined {
+    return this.listenAddr;
   }
 
   private static instanceKey(instance: object): string {
     let key = FastifyServerToolTransport.instanceKeys.get(instance);
     if (!key) {
-      key = `fastify#${++FastifyServerToolTransport.instanceSeq}`;
+      key = `fastify://instance-${++FastifyServerToolTransport.instanceSeq}`;
       FastifyServerToolTransport.instanceKeys.set(instance, key);
     }
     return key;
   }
 
+  /**
+   * Observed bind, as a URI. Fastify resolves a TCP listen with a URL and a
+   * unix-socket listen with the bare socket path (实测), so the string branch has
+   * to tell them apart rather than assume a URL.
+   */
   protected toListenAddr(listenResult: any): string | undefined {
-    if (typeof listenResult === 'string') {return listenResult;}
+    if (typeof listenResult === 'string') {
+      return /^https?:\/\//i.test(listenResult) ? listenResult : unixSocketUri(listenResult);
+    }
     if (listenResult && typeof listenResult === 'object') {
       const { address, port, socketPath } = listenResult as any;
-      if (socketPath) {return `unix:${socketPath}`;}
+      if (socketPath) {return unixSocketUri(socketPath);}
       if (address && port) {return `http://${address}:${port}`;}
     }
     return undefined;

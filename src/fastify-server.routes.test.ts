@@ -1,5 +1,7 @@
 import type { FastifyInstance } from 'fastify';
-import { RpcTransportManager, ServerTools } from '@isdk/tool-rpc';
+import { unlinkSync } from 'node:fs';
+import nodeHttp from 'node:http';
+import { HttpServerToolTransport, RpcTransportManager, ServerTools } from '@isdk/tool-rpc';
 
 import { findPort } from '@isdk/util';
 import fastify from 'fastify';
@@ -298,7 +300,7 @@ describe('fastifyServerToolTransport: physical address and route audit', () => {
     resetRegistries();
     transport = new FastifyServerToolTransport(fastify());
     transport.mount(RegA, 'http://localhost:3985/api');
-    expect(transport.getListenAddr()).toBe('http://localhost:3985');
+    expect(transport.getBaseUrl()).toBe('http://localhost:3985');
     // the physical find-my-way patterns ('/api/', '/api/:toolId/:id?') are an
     // implementation detail; the audit keys on the logical prefix
     expect(transport.getRoutes()).toEqual(['/api']);
@@ -320,21 +322,118 @@ describe('fastifyServerToolTransport: physical address and route audit', () => {
     expect(() => mgr.addServer(t3)).toThrow(/Routing Conflict/);
   });
 
+  it('detects a conflict between a Fastify transport and an HTTP transport on one base', () => {
+    // 跳 transport 类的审计以前完全失效：Fastify 返回 origin URL，HTTP 返回 host:port。
+    // 现在两边都是 canonical URI，连 host 写法不同（127.0.0.1 vs localhost）也能对上。
+    const mgr = RpcTransportManager.instance;
+
+    const fastifyT = new FastifyServerToolTransport(fastify());
+    fastifyT.mount(RegA, 'http://127.0.0.1:3988/api');
+    mgr.addServer(fastifyT);
+
+    const httpT = new HttpServerToolTransport({ apiUrl: 'http://localhost:3988/api' });
+    httpT.addRpcHandler('http://localhost:3988/api');
+
+    // 审计在 bind 之前发生：不必真去监听就能拦下同一底座上的重复路由
+    expect(() => mgr.addServer(httpT)).toThrow(/Routing Conflict/);
+  });
+
   it('groups transports that share one Fastify instance', () => {
     const shared: FastifyInstance = fastify();
     const t1 = new FastifyServerToolTransport(shared);
     t1.addRpcHandler('/same');
     const t2 = new FastifyServerToolTransport(shared);
     t2.addRpcHandler('/other');
-    expect(t1.getListenAddr()).toBe(t2.getListenAddr());
+    expect(t1.getBaseUrl()).toBe(t2.getBaseUrl());
   });
 
-  it('reports the bound address once listening', async () => {
+  it('keeps the declared identity stable and reports the observed bind separately', async () => {
     const port = await findPort(3987);
     const t = new FastifyServerToolTransport(fastify());
-    t.mount(RegA, '/api');
+    t.mount(RegA, `http://localhost:${port}/api`);
+
+    const declared = t.getBaseUrl();
+    // nothing is bound yet, so there is no observation to report
+    expect(t.getBoundAddress()).toBeUndefined();
+
     await t.start({ port, host: '127.0.0.1' });
-    expect(t.getListenAddr()).toBe(`http://127.0.0.1:${port}`);
+
+    // the audit key must not drift across the start boundary
+    expect(declared).toBe(`http://localhost:${port}`);
+    expect(t.getBaseUrl()).toBe(declared);
+    // the real socket is a separate observation, not the identity
+    expect(t.getBoundAddress()).toBe(`http://127.0.0.1:${port}`);
+
     await t.stop();
+  });
+
+  it('moves the declared identity to the port declared at start()', async () => {
+    const stale = await findPort(3989);
+    const used = await findPort(3990);
+    const t = new FastifyServerToolTransport(fastify());
+    t.mount(RegA, `http://localhost:${stale}/api`);
+    expect(t.getBaseUrl()).toBe(`http://localhost:${stale}`);
+
+    await t.start({ port: used, host: '127.0.0.1' });
+
+    // apiUrl 里的端口已经过时：start 的参数才是真正声明的底座
+    expect(t.getBaseUrl()).toBe(`http://localhost:${used}`);
+    expect(t.getBoundAddress()).toBe(`http://127.0.0.1:${used}`);
+
+    await t.stop();
+  });
+
+  it('turns a bare path prefix into a real base once a bind is declared', async () => {
+    const mgr = RpcTransportManager.instance;
+    const port = await findPort(3991);
+    const t = new FastifyServerToolTransport(fastify());
+    t.mount(RegA, '/api');
+    // 未监听时没有任何底座可声明，只能用实例占位
+    expect(t.getBaseUrl()).toMatch(/^fastify:\/\/instance-\d+$/);
+
+    await t.start({ port, host: '127.0.0.1' });
+    expect(t.getBaseUrl()).toBe(`http://localhost:${port}`);
+
+    // 现在它能和 HTTP transport 对上同一个底座（以前永远对不上）
+    const httpT = new HttpServerToolTransport({ apiUrl: `http://localhost:${port}/api` });
+    httpT.addRpcHandler(`http://localhost:${port}/api`);
+    mgr.addServer(t);
+    expect(() => mgr.addServer(httpT)).toThrow(/Routing Conflict/);
+
+    await t.stop();
+  });
+
+  it('declares the unix socket it listens on as its base, and serves over it', async () => {
+    const mgr = RpcTransportManager.instance;
+    const socket = `/tmp/ai-tool-fastify-${process.pid}-${Date.now()}.sock`;
+    const t = new FastifyServerToolTransport(fastify());
+    t.mount(RegA, '/api');
+    try {
+      await t.start({ path: socket });
+
+      expect(t.getBaseUrl()).toBe(`unix:${socket}`);
+      expect(t.getBoundAddress()).toBe(`unix:${socket}`);
+
+      // 真的能过那个 socket 服务：发现路由返回注册表 JSON
+      const body = await new Promise<string>((resolve, reject) => {
+        nodeHttp.get({ socketPath: socket, path: '/api/' }, res => {
+          res.setEncoding('utf8');
+          let data = '';
+          res.on('data', chunk => {data += chunk;});
+          res.on('end', () => resolve(data));
+        }).on('error', reject);
+      });
+      expect(Object.keys(JSON.parse(body))).toEqual(['whoA']);
+
+      // 同一个 socket 上的另一个 transport 必须被审计拦住
+      const other = new HttpServerToolTransport({ apiUrl: `unix:${socket}` });
+      other.addRpcHandler('/api');
+      mgr.addServer(t);
+      expect(() => mgr.addServer(other)).toThrow(/Routing Conflict/);
+
+      await t.stop();
+    } finally {
+      try {unlinkSync(socket);} catch { /* Fastify 关闭时已清理 */ }
+    }
   });
 });
