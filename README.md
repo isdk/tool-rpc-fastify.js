@@ -54,7 +54,7 @@ serverTransport.start({ port: 3000, host: '0.0.0.0' }).then(() => {
 })
 ```
 
-> Tool functions are serialized with `toString()` so they can migrate to a remote runtime. Keep them **self-contained**: do not close over module-scope helpers, or those references are lost.
+> Tool functions are serialized with `toString()` so they can migrate to a remote runtime. Keep them **self-contained**, or declare the shared names in the tool's `scope` field — see **Function serialization & `scope`** below.
 
 ### 2. Create the client
 
@@ -128,6 +128,52 @@ app.listen({ port: 3000, host: '0.0.0.0' })
 ```
 
 `transport.getRaw()` returns the underlying `FastifyInstance`.
+
+## 🧵 Function serialization & `scope`
+
+Tool definitions are portable. When a tool is exported (`allowExportFunc: true`), persisted, or migrated to another runtime, its `func` is serialized with `toString()` — **only the source text travels**, so anything captured from the surrounding module scope is gone on the other side:
+
+```typescript
+import { slugify } from './utils'
+
+// ❌ works locally, breaks as soon as the source is re-created elsewhere
+ServerTools.register({
+  name: 'slug',
+  isApi: true,
+  func: ({ t }) => slugify(t),
+})
+```
+
+Either keep the function self-contained, or declare the names that the server and the client have **agreed on** in the tool's `scope` field. `scope` keys become closure variables of the compiled function, and a `this` key becomes its `this`:
+
+```typescript
+ServerTools.register({
+  name: 'slug',
+  isApi: true,
+  allowExportFunc: true,
+  scope: { slugify }, // the contract: every runtime provides `slugify`
+  func: ({ t }) => slugify(t), // compiled against the scope, so the name resolves
+})
+
+// scope.this becomes the function's this
+ServerTools.register({
+  name: 'scale',
+  isApi: true,
+  scope: { this: { factor: 10 } },
+  func: function ({ a }) {
+    return a * this.factor
+  },
+})
+```
+
+Rules that matter in practice (defined by `@isdk/tool-func`):
+
+- `scope` is **never serialized** — it holds runtime references, not metadata. Each side supplies its own implementation under the same name; that shared naming _is_ the contract.
+- Declaring a **non-empty** `scope` recompiles the function from its own source so the bindings apply, which **drops its original lexical closure**. Declare a scope only when you want those bindings.
+- With no (or empty) `scope`, the function is assigned as-is and its closure keeps working locally — but it is still lost across the wire.
+- A `func` given as a **string** is always compiled against `scope`.
+- Sources that have no standalone function-expression source (method shorthand, class methods, native code) are kept as-is; their scope keys simply do not bind.
+- Discovery (`GET <pathname>`) omits `func` by default; `allowExportFunc: true` exports it as source text.
 
 ## 🧭 Routing & headers
 

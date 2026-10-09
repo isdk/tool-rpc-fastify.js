@@ -54,7 +54,7 @@ serverTransport.start({ port: 3000, host: '0.0.0.0' }).then(() => {
 })
 ```
 
-> 工具函数会被 `toString()` 序列化，以便迁移到远端运行时。因此函数必须**自包含**：不要引用模块作用域中的 helper，否则这些引用会丢失。
+> 工具函数会被 `toString()` 序列化，以便迁移到远端运行时。因此函数要么保持**自包含**，要么把共享的名字声明在工具的 `scope` 字段中——见下文「函数序列化与 `scope`」。
 
 ### 2. 创建客户端
 
@@ -127,6 +127,52 @@ app.listen({ port: 3000, host: '0.0.0.0' })
 ```
 
 `transport.getRaw()` 返回底层的 `FastifyInstance`。
+
+## 🧵 函数序列化与 `scope`
+
+工具定义是可移植的。当工具被导出（`allowExportFunc: true`）、持久化或迁移到其他运行时时，其 `func` 会被 `toString()` 序列化——**只有源码文本会随行**，因此从外层模块作用域捕获的任何变量在对端都会丢失：
+
+```typescript
+import { slugify } from './utils'
+
+// ❌ 本地可用，但源码在对端重建后就失效了
+ServerTools.register({
+  name: 'slug',
+  isApi: true,
+  func: ({ t }) => slugify(t),
+})
+```
+
+要么让函数自包含，要么把服务端与客户端**约定好**的名字声明到工具的 `scope` 字段里。`scope` 的键会成为编译后函数的闭包变量，而 `this` 键则作为函数的 `this`：
+
+```typescript
+ServerTools.register({
+  name: 'slug',
+  isApi: true,
+  allowExportFunc: true,
+  scope: { slugify }, // 约定：每个运行时都提供 `slugify`
+  func: ({ t }) => slugify(t), // 按 scope 编译，因此该名字能解析
+})
+
+// scope 中的 this 会作为函数的 this
+ServerTools.register({
+  name: 'scale',
+  isApi: true,
+  scope: { this: { factor: 10 } },
+  func: function ({ a }) {
+    return a * this.factor
+  },
+})
+```
+
+实践中需要注意的规则（由 `@isdk/tool-func` 定义）：
+
+- `scope` **不会被序列化**——它存放的是运行时引用，不是元数据。每一端按同名提供自己的实现；这套同名约定本身就是契约。
+- 声明**非空** `scope` 会按函数自身源码重新编译以完成绑定，这会**丢弃原有的词法闭包**。只在确实需要这些绑定时才声明 scope。
+- 没有（或为空）`scope` 时，函数直接赋值，其闭包在本地仍然有效——但跨网络依旧会丢失。
+- `func` 为**字符串**时，总是按 `scope` 编译。
+- 没有独立函数表达式源码的形式（方法简写、类方法、原生代码）会原样保留，其 scope 键不会绑定。
+- 发现路由（`GET <pathname>`）默认不输出 `func`；`allowExportFunc: true` 会将其作为源码文本导出。
 
 ## 🧭 路由与 Header
 
