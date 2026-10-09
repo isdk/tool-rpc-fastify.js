@@ -1,5 +1,4 @@
 // @vitest-environment node
-import fastify from 'fastify';
 
 import {
   ClientTools,
@@ -7,11 +6,13 @@ import {
   RpcTransportManager,
   ServerTools,
 } from '@isdk/tool-rpc';
+
 import { findPort } from '@isdk/util';
+import fastify from 'fastify';
 
 import { FastifyServerToolTransport } from './fastify-server';
 
-describe('Fastify transport: timeout & 102 background polling', () => {
+describe('fastify transport: timeout & 102 background polling', () => {
   let serverTransport: FastifyServerToolTransport;
   let client: typeof ClientTools;
   let apiRoot: string;
@@ -29,10 +30,10 @@ describe('Fastify transport: timeout & 102 background polling', () => {
       name: 'slow-tool',
       isApi: true,
       timeout: 500,
-      func: async function (this: any, { delay = 1000 }: { delay?: number }) {
+      async func (this: any, { delay = 1000 }: { delay?: number }) {
         const signal = this.ctx?.signal;
         return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => resolve('done'), delay);
+          const timer = setTimeout(resolve, delay, 'done');
           if (signal) {
             signal.addEventListener('abort', () => {
               clearTimeout(timer);

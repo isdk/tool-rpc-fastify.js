@@ -1,16 +1,17 @@
-import fastify, { FastifyInstance } from 'fastify';
-
+import type { FastifyInstance } from 'fastify';
 import {
   ClientTools,
   HttpClientToolTransport,
   RpcTransportManager,
   ServerTools,
 } from '@isdk/tool-rpc';
+
 import { findPort } from '@isdk/util';
+import fastify from 'fastify';
 
 import { FastifyServerToolTransport } from './fastify-server';
 
-describe('ServerTools/ClientTools Test', () => {
+describe('serverTools/ClientTools Test', () => {
   let serverInstance: FastifyInstance;
   let serverTransport: FastifyServerToolTransport;
   let client: typeof ClientTools;
@@ -81,7 +82,7 @@ describe('ServerTools/ClientTools Test', () => {
   });
 });
 
-describe('FastifyServerToolTransport extras', () => {
+describe('fastifyServerToolTransport extras', () => {
   let serverTransport: FastifyServerToolTransport;
   let apiRoot: string;
 

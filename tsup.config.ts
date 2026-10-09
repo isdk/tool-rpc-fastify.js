@@ -17,7 +17,7 @@ export default defineConfig({
     // https://terser.org/docs/options/#mangle-options
     "mangle": {
       "properties": {
-        "regex": /^_[$]/,
+        "regex": /^_\$/,
         // "undeclared": true, // Mangle those names when they are accessed as properties of known top level variables but their declarations are never found in input code.
       },
       "toplevel": true,
