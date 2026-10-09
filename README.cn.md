@@ -176,7 +176,7 @@ ServerTools.register({
 
 ## 🧭 路由与 Header
 
-`mount()`（或 `addRpcHandler()`）会在 API 路径下注册一条兜底路由：
+`mount()`（或 `addRpcHandler()`）会在 API 路径下注册一条兜底路由（根挂载 `'/'` 或 `''` 也受支持，路由会注册在服务根路径）：
 
 ```
 ALL  <pathname>/:toolId/:id?
@@ -199,6 +199,17 @@ curl -X POST http://localhost:3000/api/ \
 
 ```bash
 curl http://localhost:3000/api/
+```
+
+同一个 transport 支持多次挂载：每个前缀各自绑定自己的注册表与发现处理器。重复挂载同一前缀时，默认会**替换**它们；传入 `options.remount = 'throw'` 则改为抛出 Fastify 的 `FST_ERR_DUPLICATED_ROUTE`。
+
+这不只是 Fastify 的规则：路由声明的簿记与 `remount` 选项（`RouteRemountMode`）位于 `@isdk/tool-rpc` 的 `ServerToolTransport` 基类，`HttpServerToolTransport` 与 `MailboxServerTransport` 遵守同一语义。各 transport 只决定冲突**如何**上报——覆写 `onDuplicateRoute()`，本 transport 选择重新注册路由，从而由 find-my-way 抛原生错误。
+
+```ts
+transport.mount(ToolsA, '/a');
+transport.mount(ToolsB, '/b'); // 每个前缀用自己的注册表
+transport.mount(ToolsC, '/a'); // 替换 /a 的注册表（会打印 warning）
+transport.mount(ToolsD, '/a', { remount: 'throw' }); // 抛 FST_ERR_DUPLICATED_ROUTE
 ```
 
 ### RPC Header
@@ -329,10 +340,13 @@ ServerTools.register({
 | 成员                                                | 说明                                                                                                                                                     |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `new FastifyServerToolTransport(server?, options?)` | `server` 可以是 `FastifyInstance`，**或** Fastify 服务端配置对象（此时会自动创建实例）。`options` 为传输层选项（`apiUrl`、`dispatcher`、`manager` 等）。 |
-| `mount(serverTools, apiUrl, options?)`              | 便捷方法：设置工具注册表，并注册 RPC + 发现路由。                                                                                                        |
-| `addRpcHandler(apiUrl, options?)`                   | 注册 `ALL <pathname>/:toolId/:id?` 用于 RPC 调用。                                                                                                       |
-| `addDiscoveryHandler(apiUrl, handler)`              | 注册 `GET <pathname>`（以及 `<pathname>/`），返回工具元数据。                                                                                            |
-| `start(options?)` / `_start(options?)`              | 启动监听；默认 `{ port: 3000, host: '0.0.0.0' }`，与构造参数合并。返回监听地址。                                                                         |
+| `mount(serverTools, apiUrl, options?)`              | 便捷方法：设置工具注册表，并注册 RPC + 发现路由。`options` 同时作用于两条路由；`remount: 'throw'` 被拒时不会改动 transport 的注册表。  |
+| `options.remount`                                   | `'replace'`（默认）或 `'throw'`：对已挂载前缀再次挂载时的行为——替换其注册表/发现处理器，或抛出 Fastify 的 `FST_ERR_DUPLICATED_ROUTE`。与 `@isdk/tool-rpc` 的 `RouteRemountMode` 是同一选项，所有 server transport 共用。 |
+| `addRpcHandler(apiUrl, options?)`                   | 注册 `ALL <pathname>/:toolId/:id?` 用于 RPC 调用。`options` 会作为 Fastify 路由选项透传（`preHandler`、`bodyLimit`、`schema`、`logLevel`、`config` 等），另有 `options.registry` 为该路由单独绑定注册表。 |
+| `addDiscoveryHandler(apiUrl, handler, options?)`    | 注册 `GET <pathname>`（以及 `<pathname>/`），返回工具元数据。重复注册同一前缀时替换处理器（`options.remount: 'throw'` 则抛错），不会重复注册路由。            |
+| `start(options?)` / `_start(options?)`              | 启动监听；默认 `{ port: 3000, host: '0.0.0.0' }`，与构造参数合并。返回监听地址；监听失败（如 `EADDRINUSE`）时 **reject**。                                  |
+| `getListenAddr()`                                   | 该 transport 的物理底座：已监听时为绑定地址，否则为 `apiUrl` 的 origin 或共享的 Fastify 实例。用于传输管理器的路由冲突审计。                                |
+| `getRoutes()`                                       | 该 transport 声明负责的逻辑路由（各挂载前缀），而非基类默认的 `['/']`。                                                                                     |
 | `stop(force?)`                                      | 关闭 Fastify 服务；`force` 会额外断开 keep-alive 连接（`closeAllConnections`）。                                                                         |
 | `getRaw()`                                          | 返回底层 `FastifyInstance`。                                                                                                                             |
 | `canStream`                                         | 为 `true`——支持 Node 流与 Web 流。                                                                                                                       |

@@ -1,14 +1,51 @@
+import type { RouteRemountMode, ServerTools, ToolRpcRequest, ToolRpcResponse } from '@isdk/tool-rpc';
+import type {
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest,
+  FastifyServerOptions,
+  RouteShorthandOptions,
+} from 'fastify';
+
+import { RPC_HEADERS, RpcError, ServerToolTransport } from '@isdk/tool-rpc';
+
 import fastify from 'fastify';
-import {
-  RPC_HEADERS,
-  RpcError,
-  ServerToolTransport,
-  type ServerTools,
-  type ToolRpcRequest,
-  type ToolRpcResponse,
-} from '@isdk/tool-rpc';
 import { defaultsDeep } from 'lodash-es';
-import type { FastifyInstance, FastifyReply, FastifyRequest, FastifyServerOptions } from 'fastify';
+
+/**
+ * What to do when a route is claimed again on a prefix this transport already
+ * serves. The option itself lives in `@isdk/tool-rpc` (`RouteRemountMode`) so
+ * every server transport shares one semantics; it is re-exported here.
+ *
+ * - `'replace'` (default): the new registry / discovery handler takes over the
+ *   existing route, and a warning is logged.
+ * - `'throw'`: `onDuplicateRoute()` fires, and this transport's override lets
+ *   find-my-way raise its own `FST_ERR_DUPLICATED_ROUTE`.
+ */
+export type RemountMode = RouteRemountMode;
+
+/**
+ * Options accepted by `addRpcHandler()` / `addDiscoveryHandler()` / `mount()`.
+ * Everything except `registry` and `remount` is passed straight through to
+ * Fastify as route options (`preHandler`, `bodyLimit`, `schema`, `logLevel`,
+ * `config`, ...).
+ */
+export interface FastifyRpcHandlerOptions extends RouteShorthandOptions {
+  /**
+   * Registry used to dispatch the calls matched by this route. Defaults to the
+   * registry passed to `mount()`. Set it explicitly when mounting several
+   * registries on one transport.
+   */
+  registry?: any;
+  /**
+   * How to handle a route that is already mounted at the same path. Defaults to
+   * `'replace'`; pass `'throw'` to get Fastify's duplicate-route error instead.
+   */
+  remount?: RemountMode;
+}
+
+/** Key under which a route handler tags its request with its own route prefix. */
+const RPC_ROUTE_CTX = Symbol('ai-tool-fastify.rpcRoute');
 
 /**
  * A concrete server transport implementation for Fastify.
@@ -16,15 +53,22 @@ import type { FastifyInstance, FastifyReply, FastifyRequest, FastifyServerOption
  * Based on the tool-rpc V2 transport architecture: physical Fastify routes
  * are normalized into ToolRpcRequest and processed through the shared
  * dispatcher pipeline (processIncomingCall), then written back via sendRpcResponse.
+ *
+ * Per-prefix bookkeeping (apiUrl / registry / discovery handler, and what a
+ * repeated claim means) is inherited from `ServerToolTransport`, so several
+ * prefixes on one transport never clobber each other.
  */
 export class FastifyServerToolTransport extends ServerToolTransport {
   public server: FastifyInstance;
   /** The tool registry used for dispatching RPC calls on this transport. */
   public registry: any;
-  /** Path prefix (without trailing slash) that handles RPC calls. */
+  /** Path prefix (without trailing slash, '/' for root) of the last RPC route claimed. */
   protected rpcPrefix: string = '';
-  /** Path prefix (without trailing slash) that handles tool discovery. */
-  protected discoveryPrefix: string = '';
+  /** Physical listen address, recorded once `_start()` has resolved. */
+  protected listenAddr?: string;
+  /** Stable identity per Fastify instance, used as the physical listen address. */
+  private static readonly instanceKeys = new WeakMap<object, string>();
+  private static instanceSeq = 0;
 
   constructor(server?: FastifyInstance | FastifyServerOptions, options?: any) {
     // Allow passing either a Fastify instance or plain Fastify server options
@@ -46,52 +90,126 @@ export class FastifyServerToolTransport extends ServerToolTransport {
   /**
    * Convenience: mount the RPC + discovery routes for a tools registry
    * under the given API prefix.
+   *
+   * Several mounts can share one transport, each with its own prefix and
+   * registry; `options.remount` decides what a second mount on an already
+   * mounted prefix does ('replace' by default, 'throw' for Fastify's error).
    */
-  public mount(serverTools: typeof ServerTools, apiPrefix: string, options?: any): void {
+  public mount(serverTools: typeof ServerTools, apiPrefix: string, options?: FastifyRpcHandlerOptions): void {
+    // The registry is bound per route so a second mount() cannot re-point the
+    // first prefix at the new registry. this.registry is assigned last so a
+    // mount rejected by `remount: 'throw'` keeps dispatching the old one.
+    this.addRpcHandler(apiPrefix, { ...options, registry: options?.registry ?? serverTools });
+    this.addDiscoveryHandler(apiPrefix, () => (serverTools as any).toJSON(), options);
     this.registry = serverTools;
-    this.addRpcHandler(apiPrefix, options);
-    this.addDiscoveryHandler(apiPrefix, () => (serverTools as any).toJSON());
   }
 
-  public addDiscoveryHandler(apiUrl: string, handler: () => any): void {
+  public addDiscoveryHandler(apiUrl: string, handler: () => any, options: FastifyRpcHandlerOptions = {}): void {
     if (!this.apiUrl) {this.apiUrl = apiUrl;}
-    this.discoveryPrefix = this.toPathname(apiUrl);
-    const discoveryRoute = async (request: FastifyRequest, reply: FastifyReply) => {
-      const result = handler();
-      reply.send(result);
-    };
+    const { registry: _registry, remount, ...routeOptions } = options;
+    // Claiming is what decides replace/throw; a null claim means the physical
+    // routes already exist and only the handler was swapped.
+    const claim = this.claimRoute(apiUrl, 'discovery', { discoveryHandler: handler, remount });
+    if (!claim) {return;}
+    const prefix = claim.prefix;
     // The HTTP client normalizes the discovery URL to `<prefix>/`, so register
     // both the exact prefix and its trailing-slash form (static routes win
     // over the parameterized RPC route in find-my-way).
-    this.server.get(this.discoveryPrefix, discoveryRoute);
-    if (this.discoveryPrefix !== '/') {
-      this.server.get(`${this.discoveryPrefix}/`, discoveryRoute);
+    const paths = prefix === '/' ? ['/'] : [prefix, `${prefix}/`];
+    for (const path of paths) {
+      this.server.get(path, routeOptions, async (_request: FastifyRequest, reply: FastifyReply) => {
+        // Resolved at request time: re-mounting the same prefix swaps the handler
+        // instead of re-registering the route (no FST_ERR_DUPLICATED_ROUTE).
+        const latest = this.routeDiscoveryHandler(prefix);
+        reply.send(latest ? latest() : null);
+      });
     }
-    console.log(`[FastifyServerTransport] Mapped GET ${this.discoveryPrefix} for discovery`);
+    console.log(`[FastifyServerTransport] Mapped GET ${prefix} for discovery`);
   }
 
-  public addRpcHandler(apiUrl: string, options?: any): void {
+  public addRpcHandler(apiUrl: string, options: FastifyRpcHandlerOptions = {}): void {
     if (!this.apiUrl) {this.apiUrl = apiUrl;}
-    this.rpcPrefix = this.toPathname(apiUrl);
+    const { registry, remount, ...routeOptions } = options;
+    const claim = this.claimRoute(apiUrl, 'rpc', { registry, remount });
+    if (!claim) {
+      // Re-mounting the same prefix replaces the registry (last one wins) rather
+      // than throwing FST_ERR_DUPLICATED_ROUTE. Route options of the first
+      // registration stay in effect.
+      return;
+    }
+    const prefix = this.rpcPrefix = claim.prefix;
     // /prefix/:toolId/:id? — toolId & optional resource id, mirroring the
     // URL layout produced by the HTTP client transport (rpc-fn header also works)
-    this.server.all(`${this.rpcPrefix}/:toolId/:id?`, async (request, reply) => {
+    const routePath = `${prefix === '/' ? '' : prefix}/:toolId/:id?`;
+    this.server.all(routePath, routeOptions, async (request, reply) => {
+      (request as any)[RPC_ROUTE_CTX] = prefix;
       // The pipeline replies on its own; sendRpcResponse keeps this handler
       // pending until the response has been flushed to the socket.
-      await this.processIncomingCall(request, reply, this.registry);
+      await this.processIncomingCall(request, reply, this.routeRegistry(prefix) ?? this.registry);
     });
+  }
+
+  /**
+   * `remount: 'throw'` hook: re-register the route so find-my-way raises its own
+   * `FST_ERR_DUPLICATED_ROUTE` rather than a parallel error type. If the router
+   * tolerated the duplicate (e.g. `ignoreDuplicateRoutes`), fall back to the
+   * base class error.
+   */
+  protected onDuplicateRoute(prefix: string, kind: 'rpc' | 'discovery'): never {
+    if (kind === 'rpc') {
+      this.server.all(`${prefix === '/' ? '' : prefix}/:toolId/:id?`, {}, () => {});
+    } else {
+      this.server.get(prefix, {}, () => {});
+    }
+    return super.onDuplicateRoute(prefix, kind);
   }
 
   public async _start(options: { port?: number; host?: string } = {}): Promise<any> {
     options = defaultsDeep({}, options, this.options, { port: 3000, host: '0.0.0.0' });
     try {
       const result = await this.server.listen(options);
+      this.listenAddr = this.toListenAddr(result);
       console.log(`[FastifyServerTransport] Server listening on ${result}`);
       return result;
     } catch (err) {
+      // A library must not kill the host process: EADDRINUSE and friends have to
+      // stay catchable by the caller (and by tests).
       this.server.log.error(err);
-      process.exit(1);
+      throw err;
     }
+  }
+
+  /**
+   * Physical base this transport serves. Transports sharing one Fastify instance
+   * (or one URL origin) share an address, which is what RpcTransportManager's
+   * route-conflict audit keys on. The base class returns `apiUrl`, which carries
+   * the path and therefore hides real conflicts.
+   */
+  public getListenAddr(): string | string[] {
+    if (this.listenAddr) {return this.listenAddr;}
+    if (/^https?:\/\//i.test(this.apiUrl || '')) {
+      return new URL(this.apiUrl as string).origin;
+    }
+    return FastifyServerToolTransport.instanceKey(this.server);
+  }
+
+  private static instanceKey(instance: object): string {
+    let key = FastifyServerToolTransport.instanceKeys.get(instance);
+    if (!key) {
+      key = `fastify#${++FastifyServerToolTransport.instanceSeq}`;
+      FastifyServerToolTransport.instanceKeys.set(instance, key);
+    }
+    return key;
+  }
+
+  protected toListenAddr(listenResult: any): string | undefined {
+    if (typeof listenResult === 'string') {return listenResult;}
+    if (listenResult && typeof listenResult === 'object') {
+      const { address, port, socketPath } = listenResult as any;
+      if (socketPath) {return `unix:${socketPath}`;}
+      if (address && port) {return `http://${address}:${port}`;}
+    }
+    return undefined;
   }
 
   public async stop(force?: boolean): Promise<void> {
@@ -105,22 +223,12 @@ export class FastifyServerToolTransport extends ServerToolTransport {
   }
 
   /**
-   * Extract the route path from an apiUrl (full URL) or plain path prefix,
-   * normalized without a trailing slash, like HttpServerToolTransport does.
-   */
-  protected toPathname(apiUrl: string): string {
-    let pathname = apiUrl;
-    if (/^https?:\/\//i.test(apiUrl)) {
-      pathname = new URL(apiUrl).pathname;
-    }
-    if (!pathname.startsWith('/')) {pathname = `/${pathname}`;}
-    return pathname.replace(/\/+$/, '');
-  }
-
-  /**
    * Normalize a Fastify request into the standard ToolRpcRequest envelope.
    */
   protected async toRpcRequest(request: FastifyRequest, reply?: FastifyReply): Promise<ToolRpcRequest> {
+    // The route handler tags the request with its own prefix, so a request is
+    // always attributed to the mount that matched it, not to the last one.
+    const route = this.routeClaims.get((request as any)[RPC_ROUTE_CTX] as string);
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(request.headers)) {
       if (Array.isArray(v)) {
@@ -160,8 +268,11 @@ export class FastifyServerToolTransport extends ServerToolTransport {
       throw new RpcError('Missing routing information: rpc-fn header or :toolId path param', 400);
     }
 
+    const rpcPrefix = route?.prefix ?? this.rpcPrefix;
     return {
-      apiUrl: this.apiUrl || `http://${headers.host || 'localhost'}${this.rpcPrefix}/`,
+      apiUrl: route?.apiUrl
+        || this.apiUrl
+        || `http://${headers.host || 'localhost'}${rpcPrefix === '/' ? '' : rpcPrefix}/`,
       toolId,
       act: headers[RPC_HEADERS.ACT],
       resId,

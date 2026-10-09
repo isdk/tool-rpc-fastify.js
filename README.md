@@ -177,7 +177,8 @@ Rules that matter in practice (defined by `@isdk/tool-func`):
 
 ## 🧭 Routing & headers
 
-`mount()` (or `addRpcHandler()`) registers one catch-all route under the API path:
+`mount()` (or `addRpcHandler()`) registers one catch-all route under the API path
+(a root mount — `'/'` or `''` — is supported and registers the route at the server root):
 
 ```
 ALL  <pathname>/:toolId/:id?
@@ -200,6 +201,17 @@ Discovery is registered on `<pathname>` **and** `<pathname>/` (the HTTP client n
 
 ```bash
 curl http://localhost:3000/api/
+```
+
+Mounting more than once on one transport is supported: every prefix keeps its own registry and discovery handler. Re-mounting the same prefix **replaces** them by default; pass `options.remount = 'throw'` to get Fastify's `FST_ERR_DUPLICATED_ROUTE` instead.
+
+This is not a Fastify-only rule: the claim bookkeeping and the `remount` option (`RouteRemountMode`) live in `@isdk/tool-rpc`'s `ServerToolTransport`, so `HttpServerToolTransport` and `MailboxServerTransport` honor the same semantics. A transport only decides *how* a conflict surfaces, by overriding `onDuplicateRoute()` — this one re-registers the route so find-my-way raises its native error.
+
+```ts
+transport.mount(ToolsA, '/a');
+transport.mount(ToolsB, '/b'); // each prefix dispatches its own registry
+transport.mount(ToolsC, '/a'); // replaces the /a registry (a warning is logged)
+transport.mount(ToolsD, '/a', { remount: 'throw' }); // throws FST_ERR_DUPLICATED_ROUTE
 ```
 
 ### RPC headers
@@ -330,10 +342,13 @@ Unknown tools answer `404`. Malformed JSON params/body answer `400`.
 | Member                                              | Description                                                                                                                                                                  |
 | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `new FastifyServerToolTransport(server?, options?)` | `server` is a `FastifyInstance` **or** Fastify server options (then an instance is created for you). `options` are transport options (`apiUrl`, `dispatcher`, `manager`, …). |
-| `mount(serverTools, apiUrl, options?)`              | Convenience: sets the registry and registers the RPC + discovery routes.                                                                                                     |
-| `addRpcHandler(apiUrl, options?)`                   | Registers `ALL <pathname>/:toolId/:id?` for RPC calls.                                                                                                                       |
-| `addDiscoveryHandler(apiUrl, handler)`              | Registers `GET <pathname>` (and `<pathname>/`) returning the tool metadata.                                                                                                  |
-| `start(options?)` / `_start(options?)`              | Listens; defaults `{ port: 3000, host: '0.0.0.0' }`, merged with constructor options. Returns the listen address.                                                            |
+| `mount(serverTools, apiUrl, options?)`              | Convenience: sets the registry and registers the RPC + discovery routes. `options` apply to both routes; a rejected `remount: 'throw'` mount does not re-point the transport's registry. |
+| `options.remount`                                   | `'replace'` (default) or `'throw'`: what a second mount on an already-mounted prefix does — swap its registry / discovery handler, or raise Fastify's `FST_ERR_DUPLICATED_ROUTE`. Same option as in `@isdk/tool-rpc` (`RouteRemountMode`), shared by all server transports. |
+| `addRpcHandler(apiUrl, options?)`                   | Registers `ALL <pathname>/:toolId/:id?` for RPC calls. `options` are Fastify route options (`preHandler`, `bodyLimit`, `schema`, `logLevel`, `config`, …) plus `options.registry` to bind a specific registry to this route. |
+| `addDiscoveryHandler(apiUrl, handler, options?)`    | Registers `GET <pathname>` (and `<pathname>/`) returning the tool metadata. Re-mounting a prefix replaces the handler (or throws, with `options.remount: 'throw'`) instead of duplicating the route. |
+| `start(options?)` / `_start(options?)`              | Listens; defaults `{ port: 3000, host: '0.0.0.0' }`, merged with constructor options. Returns the listen address; **rejects** if listening fails (e.g. `EADDRINUSE`).         |
+| `getListenAddr()`                                   | Physical base of this transport: the bound address once listening, otherwise the `apiUrl` origin or the shared Fastify instance. Used by the transport manager's route audit. |
+| `getRoutes()`                                       | The logical routes this transport claims (its mount prefixes), instead of the base class's `['/']`.                                                                          |
 | `stop(force?)`                                      | Closes the Fastify server; `force` also drops keep-alive sockets (`closeAllConnections`).                                                                                    |
 | `getRaw()`                                          | The underlying `FastifyInstance`.                                                                                                                                            |
 | `canStream`                                         | `true` — Node and Web streams are supported.                                                                                                                                 |
