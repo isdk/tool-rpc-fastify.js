@@ -1,6 +1,9 @@
 import { defineConfig } from 'tsup'
 
 export default defineConfig({
+  // 发包用 release 配置（排除测试文件）；
+  // 根目录 tsconfig.json 是编辑器/类型检查用的（含测试文件）。
+  tsconfig: 'tsconfig.release.json',
   entry: ['src/index.ts'],
   format: ['cjs', 'esm'],
   // Inject cjs and esm shims:https://tsup.egoist.dev/#inject-cjs-and-esm-shims

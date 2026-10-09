@@ -1,0 +1,19 @@
+{
+  // 发包专用：tsup --dts / typedoc 用这份配置，排除测试文件。
+  // 编辑器与类型检查请用根目录的 tsconfig.json。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // types 继续继承 tsconfig.json 的 ["vitest/globals", "node"]
+    "noEmit": false
+  },
+  "exclude": [
+    "node_modules",
+    "dist",
+    "docs",
+    "web",
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "**/*.test.js",
+    "**/*.spec.js"
+  ]
+}

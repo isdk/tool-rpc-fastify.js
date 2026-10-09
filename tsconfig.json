@@ -1,14 +1,21 @@
 {
+  // 开发/编辑器与类型检查用（pnpm typecheck / VS Code），含测试文件。
+  // 发包与文档请用 tsconfig.release.json（tsup --dts / typedoc 都走那份）。
   "compilerOptions": {
     "target": "es2020",
     "module": "esnext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "strict": true,
-    "typeRoots": [
-      "./types",
-      "./node_modules/@types",
-      "./node_modules/@microsoft"
-    ],
+    // 注意：这里不要再设置 typeRoots。一旦显式设置 typeRoots，
+    // compilerOptions.types 就只会在这些目录里查找，`vitest/globals`
+    // 会报 TS2688（Cannot find type definition file for 'vitest/globals'）。
+    // vitest 的 `globals: true` 只负责运行时注入，类型要靠下面这行。
+    // 不要把 "jest" 加进来：@types/jest 的全局声明会和 vitest/globals 冲突（TS6200），
+    // 所以 @types/jest 已从 devDependencies 移除。
+    "types": ["vitest/globals", "node"],
+    // 这份 tsconfig 只给编辑器 / 类型检查用（构建走 tsup + tsconfig.release.json），
+    // 所以 noEmit 必须为 true，否则 tsc 会把 .js 直接吐到 src/ 里。
+    "noEmit": true,
 
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -16,9 +23,8 @@
     "noImplicitAny": true,
     "resolveJsonModule": true
   },
-  "exclude": [
-    "node_modules",
-    "**/*.spec.ts"
-  ],
-  "include": ["src/**/*"],
+  // 开发/编辑器视角：测试文件也要在 program 里，否则 VS Code 会把它们
+  // 当成 invisible file 放进 inferred project，types 配置对它们无效。
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["node_modules", "dist", "docs", "web"]
 }
