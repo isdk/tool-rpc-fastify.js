@@ -335,6 +335,29 @@ ServerTools.register({
 
 未知工具返回 `404`；参数/ body 的 JSON 非法返回 `400`。
 
+## 🔗 与 `@isdk/tool-rpc` 的边界
+
+本包是**独立的仓库与独立的 npm 包**，不是 `@isdk/tool-rpc` 内置的 transport。`@isdk/tool-rpc` 自带的物理 transport 只有 `HttpServerToolTransport` 与 `MailboxServerTransport`（它们是最基础的几个，也是 transport 开发者的参考实现）；`FastifyServerToolTransport` 在这里，只依赖 `@isdk/tool-rpc` 的公开 API。
+
+**从 core 复用（不自己重写）**：
+
+| core 导出的 API | 本包用在哪 |
+|---|---|
+| `BindOptions` | `_start(options)` 的签名与 transport options |
+| `normalizeListenBind()` | 取本轮监听参数（socket 三别名、socket 优先于 host/port）——与 HTTP transport 同一份优先级 |
+| `socketAddressFromBind()` | 监听**前**算声明地址（路由归属登记 key） |
+| `socketAddressFromListen()` | 监听**后**把 `listen()` 的观测值换成同一个地址 |
+
+两边共用同一份规则，才能对上下同一个 key：同一个端口（或同一个 socket 文件）上，本包的实例与 `HttpServerToolTransport` 的实例撞路由能被报出来。**不要在本包再实现一遍地址规范化**，否则两边就会错开（历史上就是这么漂移的）。
+
+**本包自己的部分**（不属于 core，也不写进 core 的文档）：
+
+- 观测值的形状：Fastify 的 TCP `listen()` 报 URL 字符串、unix `listen()` 报裸 socket 路径（实测），与 Node `server.address()` 不同；交给 `socketAddressFromListen()` 区分。
+- `defaultBindOptions()` 返回 `{ port: 3000, host: '0.0.0.0' }`；但**不**向 `socketAddressFromBind()` 传 `bindDefaults`：apiUrl 是裸 path 前缀且本轮没声明 bind 时不补默认端口——共享实例可能已由别人监听，未监听的 transport 不该假装自己占着某个端口。
+- 共享粒度是「同一个 fastify 实例」，路由交给 find-my-way；不像 HTTP transport 那样自己维护底座池与最长前缀分发表。
+- 尚未监听且 apiUrl 没有 URL 形式时，地址是合成的 `fastify://instance-N` 占位（跳 transport 不可比）。
+- Fastify 的 `close()` **会**删除 unix socket 文件（Node 不会），重启到同一路径的行为与 HTTP transport 不同。
+
 ## 🧰 API
 
 | 成员                                                | 说明                                                                                                                                                     |
@@ -345,10 +368,9 @@ ServerTools.register({
 | `addRpcHandler(apiUrl, options?)`                   | 注册 `ALL <pathname>/:toolId/:id?` 用于 RPC 调用。`options` 会作为 Fastify 路由选项透传（`preHandler`、`bodyLimit`、`schema`、`logLevel`、`config` 等），另有 `options.registry` 为该路由单独绑定注册表。 |
 | `addDiscoveryHandler(apiUrl, handler, options?)`    | 注册 `GET <pathname>`（以及 `<pathname>/`），返回工具元数据。重复注册同一前缀时替换处理器（`options.remount: 'throw'` 则抛错），不会重复注册路由。            |
 | `start(options?)` / `_start(options?)`              | 启动监听；默认 `{ port: 3000, host: '0.0.0.0' }`，与构造参数合并。`path`（也认 `socketPath` / `socket`）监听 unix socket，且优先于 `port`/`host`。返回监听地址；监听失败（如 `EADDRINUSE`）时 **reject**。                                  |
-| `getBaseUrl()`                                      | 声明身份：该 transport 的物理底座（canonical URI，如 `http://localhost:3000`，通配监听 `http://*:3000`，unix socket 为 `unix:/run/ai.sock`；socket 路径按段 percent-encode，所以名为 `ai sock` 的文件是 `unix:/run/ai%20sock`，而字面叫 `ai%20sock` 的文件是 `unix:/run/ai%2520sock`）——与 HTTP transport 共用同一个 `canonicalPhysicalUri` 做归一化，尚未监听的共享 in-process 实例用合成的 `fastify://instance-N` URI。start 前即可得；只有调用方在 `start()` 里**声明**的 bind 会改写它（系统分配的端口不会），所以裸 `/api` 前缀一旦监听在 3987 就变成 `http://localhost:3987`。传输管理器的路由冲突审计就以此为 key；因为形式已统一，与同一端口或同一 socket 上的 `HttpServerToolTransport` 撞路由也能报出来。 |
-| `getBoundAddress()`                                 | 实际绑定观测：`listen()` 返回的地址，仅 start 后可得。用于日志与系统分配端口的场景；不作为审计 key。（`getListenAddr()` 保留为 `getBaseUrl()` 的废弃别名。） |
+| `getListenAddr()`                                   | 本服务可被访问的地址（canonical URI，如 `http://localhost:3000`，通配监听 `http://*:3000`，unix socket 为 `unix:/run/ai.sock`；socket 路径按段 percent-encode，所以名为 `ai sock` 的文件是 `unix:/run/ai%20sock`，而字面叫 `ai%20sock` 的文件是 `unix:/run/ai%2520sock`）——与 HTTP transport 共用 core 同一份底座地址规则（监听前 `socketAddressFromBind`、监听后 `socketAddressFromListen`，两者内部都过 `normalizeSocketAddress` 做写法规范化）。监听前是声明值（apiUrl + `start({ host, port, path })`，只有调用方**声明**的 bind 会改写它），监听后就是 `listen()` 报的真实地址（`port: 0` 时只有内核知道端口）；尚未监听且 apiUrl 没有 URL 形式的共享 in-process 实例用合成的 `fastify://instance-N` URI。传输管理器的路由归属登记就以此为 key；因为形式已统一，与同一端口或同一 socket 上的 `HttpServerToolTransport` 撞路由也能报出来。 |
 | `getRoutes()`                                       | 该 transport 声明负责的逻辑路由（各挂载前缀），而非基类默认的 `['/']`。                                                                                     |
-| `stop(force?)`                                      | 关闭 Fastify 服务；`force` 会额外断开 keep-alive 连接（`closeAllConnections`）。                                                                         |
+| `stop(force?)`                                      | 关闭 Fastify 服务，**并释放本 transport 的路由归属登记**（`unregisterRoutes()`），之后同一个前缀才能再次被服务（否则 Manager 会一直报 `Routing Conflict`）。`force` 会额外断开 keep-alive 连接（`closeAllConnections`）。与 HTTP transport 不同：关闭会一并删除 unix socket 文件，这是 Fastify 自己的清理行为。 |
 | `getRaw()`                                          | 返回底层 `FastifyInstance`。                                                                                                                             |
 | `canStream`                                         | 为 `true`——支持 Node 流与 Web 流。                                                                                                                       |
 | `registry`                                          | 用于分发的工具注册表（由 `mount` 设置）。                                                                                                                |

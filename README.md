@@ -337,20 +337,42 @@ ServerTools.register({
 
 Unknown tools answer `404`. Malformed JSON params/body answer `400`.
 
+## 🔗 Boundary with `@isdk/tool-rpc`
+
+This package is a **separate repository and a separate npm package**; it is not one of the transports built into `@isdk/tool-rpc`. That library ships only `HttpServerToolTransport` and `MailboxServerTransport` (the most basic ones, and the reference implementations for transport developers); `FastifyServerToolTransport` lives here and depends only on the public API of `@isdk/tool-rpc`.
+
+**Reused from core (never re-implemented here):**
+
+| core export | used here for |
+|---|---|
+| `BindOptions` | the `_start(options)` signature and transport options |
+| `normalizeListenBind()` | resolving this round's listen arguments (the three socket aliases, socket wins over host/port) — same precedence as the HTTP transport |
+| `socketAddressFromBind()` | the declared address (route-ownership key) **before** `listen()` |
+| `socketAddressFromListen()` | turning `listen()`'s observation into the same address **after** listening |
+
+Both sides share one implementation, so they agree on the key: on the same port (or the same socket file), a route clash between an instance of this transport and an `HttpServerToolTransport` is reported rather than silently shadowed. **Do not re-implement address normalization in this package** — that is how the two sides drifted apart in the past.
+
+**Owned by this package** (not part of core, and not documented in core's docs):
+
+- Observation shape: Fastify's TCP `listen()` returns a URL string while a unix `listen()` returns a bare socket path (verified), unlike Node's `server.address()`; `socketAddressFromListen()` tells them apart.
+- `defaultBindOptions()` returns `{ port: 3000, host: '0.0.0.0' }`, but `bindDefaults` is deliberately **not** passed to `socketAddressFromBind()`: when apiUrl is a bare path prefix and nothing was declared this round, no default port is invented — a shared instance may already be listening, and a transport that is not listening should not claim a port.
+- Sharing granularity is "the same fastify instance"; routing is delegated to find-my-way rather than to a base pool plus longest-prefix table owned by this transport.
+- Not yet listening and apiUrl has no URL form: the address is a synthetic `fastify://instance-N` placeholder (not comparable across transports).
+- Fastify's `close()` **does** delete the unix socket file (Node's does not), so restarting on the same path behaves differently than with the HTTP transport.
+
 ## 🧰 API
 
 | Member                                              | Description                                                                                                                                                                  |
 | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `new FastifyServerToolTransport(server?, options?)` | `server` is a `FastifyInstance` **or** Fastify server options (then an instance is created for you). `options` are transport options (`apiUrl`, `dispatcher`, `manager`, …). |
-| `mount(serverTools, apiUrl, options?)`              | Convenience: sets the registry and registers the RPC + discovery routes. `options` apply to both routes; a rejected `remount: 'throw'` mount does not re-point the transport's registry. |
+| `mount(serverTools, apiUrl, options?)`              | Convenience: sets the registry and registers the RPC + discovery routes (`registerRoutes()` keeps the physical route table and the manager's ownership table in sync; it is re-entrant — re-mounting unregisters first). `options` apply to both routes; a rejected `remount: 'throw'` mount does not re-point the transport's registry. |
 | `options.remount`                                   | `'replace'` (default) or `'throw'`: what a second mount on an already-mounted prefix does — swap its registry / discovery handler, or raise Fastify's `FST_ERR_DUPLICATED_ROUTE`. Same option as in `@isdk/tool-rpc` (`RouteRemountMode`), shared by all server transports. |
 | `addRpcHandler(apiUrl, options?)`                   | Registers `ALL <pathname>/:toolId/:id?` for RPC calls. `options` are Fastify route options (`preHandler`, `bodyLimit`, `schema`, `logLevel`, `config`, …) plus `options.registry` to bind a specific registry to this route. |
 | `addDiscoveryHandler(apiUrl, handler, options?)`    | Registers `GET <pathname>` (and `<pathname>/`) returning the tool metadata. Re-mounting a prefix replaces the handler (or throws, with `options.remount: 'throw'`) instead of duplicating the route. |
 | `start(options?)` / `_start(options?)`              | Listens; defaults `{ port: 3000, host: '0.0.0.0' }`, merged with constructor options. `path` (also `socketPath` / `socket`) listens on a unix socket and wins over `port`/`host`. Returns the listen address; **rejects** if listening fails (e.g. `EADDRINUSE`).         |
-| `getBaseUrl()`                                      | Declared identity: the physical base as a canonical URI (`http://localhost:3000`, `http://*:3000` for a wildcard listen, `unix:/run/ai.sock` for a socket; socket paths are percent-encoded per segment, so a file named `ai sock` is `unix:/run/ai%20sock` and one literally named `ai%20sock` is `unix:/run/ai%2520sock`) — normalized by the same `canonicalPhysicalUri` the HTTP transport uses, or a synthetic `fastify://instance-N` URI for a shared in-process instance that has not been bound yet. Available before `start()`; only a bind the caller *declares* in `start()` moves it (an OS-assigned port does not), so a bare `/api` prefix becomes `http://localhost:3987` once it listens there. This is what the transport manager's route audit keys on, and because the form is shared, a route conflict against an `HttpServerToolTransport` on the same port or socket is caught too. |
-| `getBoundAddress()`                                 | Observed bind: the address reported by `listen()`, only available after `start()`. For logs and OS-assigned ports; never an audit key. (`getListenAddr()` remains as a deprecated alias of `getBaseUrl()`.) |
+| `getListenAddr()`                                   | The address others can reach this service at, as a canonical URI (`http://localhost:3000`, `http://*:3000` for a wildcard listen, `unix:/run/ai.sock` for a socket; socket paths are percent-encoded per segment, so a file named `ai sock` is `unix:/run/ai%20sock` and one literally named `ai%20sock` is `unix:/run/ai%2520sock`) — normalized by the same core helpers the HTTP transport uses (`normalizeSocketAddress`, `socketAddressFromBind`, `normalizeListenBind`, exported from `@isdk/tool-rpc`) — one set of rules for the socket aliases and for `socket` winning over `port`/`host`, so both transports report the same key for the same base. Before listening it is the declared value (apiUrl plus the bind *declared* in `start()`); after listening it is the address `listen()` reports (only the kernel knows the port when `port: 0`). A shared in-process instance that has not been bound and whose apiUrl carries no URL stands in with a synthetic `fastify://instance-N` URI. This is what the transport manager's route ownership registration keys on, and because the form is shared, a route conflict against an `HttpServerToolTransport` on the same port or socket is caught too. |
 | `getRoutes()`                                       | The logical routes this transport claims (its mount prefixes), instead of the base class's `['/']`.                                                                          |
-| `stop(force?)`                                      | Closes the Fastify server; `force` also drops keep-alive sockets (`closeAllConnections`).                                                                                    |
+| `stop(force?)`                                      | Closes the Fastify server **and releases this transport's route-ownership entries** (`unregisterRoutes()`), so the same prefix can be served again afterwards (otherwise the manager keeps reporting `Routing Conflict`). `force` also drops keep-alive sockets (`closeAllConnections`). Unlike `HttpServerToolTransport`, closing also removes the unix socket file — that is Fastify's own cleanup. |
 | `getRaw()`                                          | The underlying `FastifyInstance`.                                                                                                                                            |
 | `canStream`                                         | `true` — Node and Web streams are supported.                                                                                                                                 |
 | `registry`                                          | The tools registry used for dispatching (set by `mount`).                                                                                                                    |

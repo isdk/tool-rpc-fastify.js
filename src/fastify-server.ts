@@ -7,7 +7,11 @@ import type {
   RouteShorthandOptions,
 } from 'fastify';
 
-import { canonicalPhysicalUri, RPC_HEADERS, RpcError, ServerToolTransport, unixSocketUri } from '@isdk/tool-rpc';
+import {
+  socketAddressFromBind, socketAddressFromListen,
+  normalizeListenBind, RPC_HEADERS, RpcError,
+  ServerToolTransport,
+} from '@isdk/tool-rpc';
 
 import fastify from 'fastify';
 import { defaultsDeep } from 'lodash-es';
@@ -64,8 +68,10 @@ export class FastifyServerToolTransport extends ServerToolTransport {
   public registry: any;
   /** Path prefix (without trailing slash, '/' for root) of the last RPC route claimed. */
   protected rpcPrefix: string = '';
-  /** Physical listen address, recorded once `_start()` has resolved. */
+  /** 监听后的真实地址（`port: 0` 时只有内核知道端口），`getListenAddr()` 之后就用它。 */
   protected listenAddr?: string;
+  /** 本轮 `start()` 的 bind 参数；地址由它 + apiUrl 算出，所以得存下来。 */
+  protected bindOptions?: BindOptions;
   /** Stable identity per Fastify instance, used as the physical listen address. */
   private static readonly instanceKeys = new WeakMap<object, string>();
   private static instanceSeq = 0;
@@ -165,14 +171,19 @@ export class FastifyServerToolTransport extends ServerToolTransport {
   }
 
   public async _start(options: BindOptions = {}): Promise<any> {
+    // 地址由 apiUrl + 本轮 bind 参数算出，所以先存下参数（getListenAddr 要用）
+    this.bindOptions = options;
+
     // 同一个 socket 路径在不同 transport / Node 版本里叫法不同（path / socketPath /
-    // socket）：声明身份三个都认，监听时也必须一样。声明了 socket 就不补默认
-    // 端口：port 与 path 同时给出时 Node 会丢掉 path，声明身份与真实监听就会错开。
+    // socket）：声明身份三个都认，监听时也必须一样——别名与「socket 优先于
+    // host/port」这条规则在 core 的 normalizeListenBind 里，与 HTTP transport 同一份。
+    // 声明了 socket 就不补默认端口：port 与 path 同时给出时 Node 会丢掉 path，
+    // 声明身份与真实监听就会错开。
     const declared: BindOptions = defaultsDeep({}, options, this.options);
     const listenOptions: Record<string, any> = { ...declared };
-    const socket = listenOptions.path ?? listenOptions.socketPath ?? listenOptions.socket;
-    if (socket) {
-      listenOptions.path = String(socket);
+    const bind = normalizeListenBind(declared);
+    if (bind.socket) {
+      listenOptions.path = bind.socket;
       delete listenOptions.port;
       delete listenOptions.host;
     } else {
@@ -184,6 +195,8 @@ export class FastifyServerToolTransport extends ServerToolTransport {
     try {
       const result = await this.server.listen(listenOptions);
       this.listenAddr = this.toListenAddr(result);
+      // 地址定下来了（`port: 0` 可能换了端口），审计条目跟着迁移
+      this.registerRoutes();
       console.log(`[FastifyServerTransport] Server listening on ${result}`);
       return result;
     } catch (err) {
@@ -195,24 +208,31 @@ export class FastifyServerToolTransport extends ServerToolTransport {
   }
 
   /**
-   * Declared identity from `apiUrl`: the physical base this transport serves, as
-   * a canonical URI (scheme + authority, no path). Transports sharing one Fastify
-   * instance (or one URL origin) share a base, which is what RpcTransportManager's
-   * route-conflict audit keys on. The base class returns `apiUrl`, which carries
-   * the path and therefore hides real conflicts.
+   * 本服务可被访问的地址：监听前是声明值（apiUrl + `start({ host, port, path })`），
+   * 监听后是 `listen()` 报的真实地址 —— 也就是别人真能访问到的那个。
    *
-   * Available before start(). It only changes when the caller *declares* a bind
-   * through start() options (see applyBindOptions); an OS-assigned port (0) never
-   * moves it, so the audit key stays queryable across the start boundary.
-   * When apiUrl has no URL form (a bare path prefix), a synthetic key stands in.
+   * 框架把它当不透明字符串（审计 key、日志），地址语义归本 transport：
+   * 监听前走 `socketAddressFromBind`、监听后走 `socketAddressFromListen`，两个都是
+   * core 里与 `HttpServerToolTransport` **同一份**实现（里面叠了 `normalizeSocketAddress`
+   * 的写法规范化：回环别名 127.0.0.1 / [::1] / localhost、默认端口、尾斜杠全部归一），
+   * 所以两边才能对上 key。
    */
-  protected apiUrlIdentity(): string {
-    if (/^https?:\/\//i.test(this.apiUrl || '')) {
-      // 与 HttpServerToolTransport 用同一个归一化实现，两边才能对上 key：
-      // 回环别名（127.0.0.1 / [::1] / localhost）、默认端口、尾斜杠全部归一。
-      return canonicalPhysicalUri(this.apiUrl as string);
-    }
-    // 没有 URL 表示（只共享一个 in-process 实例）：造一个 URI 代替，
+  public getListenAddr(): string {
+    return this.listenAddr ?? this.declaredAddress();
+  }
+
+  /**
+   * 由 apiUrl 与本轮 bind 参数算出的地址（尚未监听时）。规则在 core 的
+   * `socketAddressFromBind`，与 `HttpServerToolTransport` 同一份：同一个端口上两边要
+   * 报同一个 key，审计才能对上。
+   *
+   * 不传 `bindDefaults`：apiUrl 是裸 path 前缀且本轮没声明 bind 时，**不**补默认端口——
+   * 共享实例可能已经由别人监听，未监听的 transport 不该假装自己占着某个端口。
+   */
+  private declaredAddress(): string {
+    const identity = socketAddressFromBind({ apiUrl: this.apiUrl, bind: this.bindOptions });
+    if (identity) {return identity;}
+    // 既没监听也没声明底座（只共享一个 in-process 实例）：造一个 URI 代替，
     // scheme 就是它的命名空间。
     return FastifyServerToolTransport.instanceKey(this.server);
   }
@@ -227,15 +247,6 @@ export class FastifyServerToolTransport extends ServerToolTransport {
    */
   protected defaultBindOptions(): BindOptions {
     return { port: 3000, host: '0.0.0.0' };
-  }
-
-  /**
-   * Observed bind: the address reported by `listen()`, only available after
-   * start(). Use it for logs and to complete the declared identity when the port
-   * was assigned by the OS. Never an audit or pool key.
-   */
-  public getBoundAddress(): string | undefined {
-    return this.listenAddr;
   }
 
   private static instanceKey(instance: object): string {
@@ -253,18 +264,16 @@ export class FastifyServerToolTransport extends ServerToolTransport {
    * to tell them apart rather than assume a URL.
    */
   protected toListenAddr(listenResult: any): string | undefined {
-    if (typeof listenResult === 'string') {
-      return /^https?:\/\//i.test(listenResult) ? listenResult : unixSocketUri(listenResult);
-    }
-    if (listenResult && typeof listenResult === 'object') {
-      const { address, port, socketPath } = listenResult as any;
-      if (socketPath) {return unixSocketUri(socketPath);}
-      if (address && port) {return `http://${address}:${port}`;}
-    }
-    return undefined;
+    // 观测值 → 地址的规则在 core 的 socketAddressFromListen，与 HttpServerToolTransport
+    // 同一份：TCP 给 URL 字符串、unix 给裸路径，两边都过同一个规范化（否则
+    // `127.0.0.1` 观测与 `localhost` 声明对不上 key）。
+    return socketAddressFromListen(listenResult);
   }
 
   public async stop(force?: boolean): Promise<void> {
+    // 释放本实例占的审计条目（与 HttpServerToolTransport 一致）。
+    // 不调就会把路由永久锁在审计表上：stop 后同一前缀再上服务必报 Routing Conflict。
+    this.unregisterRoutes();
     // Mirror HttpServerToolTransport: force drops lingering keep-alive sockets
     if (force) {this.server.server?.closeAllConnections?.();}
     return this.server.close();
