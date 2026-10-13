@@ -11,7 +11,7 @@ import type {
 } from 'fastify';
 
 import {
-  normalizeHostAndPort, normalizeListenBind,
+  normalizeHostAndPort, normalizeListenBind, normalizeRoutePath,
   RPC_HEADERS, RpcError, ServerToolTransport, socketAddressFromBind,
   socketAddressFromListen,
 } from '@isdk/tool-rpc';
@@ -221,13 +221,18 @@ export class FastifyServerToolTransport extends ServerToolTransport {
   }
 
   /**
-   * The prefix this request was matched by, taken from the tag the route handler
-   * put on it — the same value the physical dispatch already settled on, so the
-   * registry layers, the route table and the identity context never re-derive it
-   * (and never disagree with the route that actually answered).
+   * The prefix this request was matched by. `toRpcRequest()` copies the tag the
+   * route handler put on the FastifyRequest onto the envelope, so there is exactly
+   * one hop and the registry layers, the route table and the identity context never
+   * re-derive it (and never disagree with the route that actually answered).
+   *
+   * There is no second source: `raw._req` is the Node `IncomingMessage`, which is
+   * never tagged — reading the tag off it would be a branch that can never fire.
+   * With no tag (a request that never went through our route handler) the base class
+   * falls back to deriving the prefix from `apiUrl`.
    */
   protected matchedPrefix(rpcReq: ToolRpcRequest): string | undefined {
-    const claimed = (rpcReq as any)[RPC_ROUTE_CTX] ?? (rpcReq.raw?._req as any)?.[RPC_ROUTE_CTX];
+    const claimed = (rpcReq as any)[RPC_ROUTE_CTX];
     if (claimed) {return claimed;}
     return super.matchedPrefix(rpcReq);
   }
@@ -374,17 +379,31 @@ export class FastifyServerToolTransport extends ServerToolTransport {
       }
     }
 
-    const { toolId: pathToolId, id: pathId } = (request.params ?? {}) as any;
     let toolId = headers[RPC_HEADERS.TOOL_ID];
     let act = headers[RPC_HEADERS.ACT];
     let resId = headers[RPC_HEADERS.RES_ID];
+
+    // Path addressing comes from core's normalizer over the raw URL, never from
+    // find-my-way's params. The framework decodes `%2F` into a separator, splits
+    // `//` into an empty segment, and 404s on `x/..` before any handler runs, so
+    // params answer `%2F` / `//` / trailing slash differently from the HTTP
+    // transport: `/api/a%2Fb` would address a tool the HTTP transport reports as
+    // missing, and `/api//tool` would lose its tool id entirely. Same normalizer on
+    // both sides is what makes one URL mean one tool regardless of transport.
+    const claimPrefix = route?.prefix ?? this.rpcPrefix ?? '/';
+    const routePath = normalizeRoutePath(request.raw.url || '/', { mode: 'request', strictTrailingSlash: this.strictTrailingSlash });
+    // Segments after the claimed prefix: decoded per segment, `%2F` stays encoded,
+    // so one encoded slash is one segment and never a separator.
+    const claimDepth = normalizeRoutePath(claimPrefix, { mode: 'request', strictTrailingSlash: this.strictTrailingSlash }).segments.length;
+    const parts = routePath.segments.slice(claimDepth);
+    // Prefix-relative path (root is '/'; `''` and `'/'` are one shape after normalizing)
+    const relPath = `/${parts.join('/')}`;
 
     // Route table first, exactly like the HTTP transport: the built-in discovery row
     // (`GET <prefix root>` -> `rpcApis`) and any third-party `addRoute()` row are
     // resolved here, so discovery is an ordinary call — identity, validation and
     // timeout included. An `rpc-fn` header is explicit addressing and outranks path.
     if (!toolId) {
-      const relPath = pathToolId ? `/${pathId ? `${pathToolId}/${pathId}` : pathToolId}` : '/';
       const entry = route
         ? this.matchRouteEntry(route.prefix, { path: relPath, method: request.method, act })
         : undefined;
@@ -392,9 +411,9 @@ export class FastifyServerToolTransport extends ServerToolTransport {
         toolId = entry.toolId;
         if (entry.act) {act = entry.act;}
         if (entry.resId !== undefined && resId === undefined) {resId = entry.resId;}
-      } else if (pathToolId) {
-        toolId = pathToolId;
-        if (resId === undefined) {resId = pathId;}
+      } else if (parts.length > 0) {
+        toolId = parts[0];
+        if (parts.length > 1 && resId === undefined) {resId = parts[1];}
       }
     }
 
@@ -424,17 +443,16 @@ export class FastifyServerToolTransport extends ServerToolTransport {
       // An empty route table means this transport claimed no prefix at all — the
       // built-in discovery endpoint is part of a prefix, so say that rather than
       // sending the reader off to fix their URL.
-      throw new RpcError(`Missing routing information: rpc-fn header or :toolId path param${this.emptyRouteTableHint()}`, 400);
+      throw new RpcError(`Missing routing information: rpc-fn header or a path under ${claimPrefix}${this.emptyRouteTableHint()}`, 400);
     }
 
-    const rpcPrefix = route?.prefix ?? this.rpcPrefix;
     const rpcReq: ToolRpcRequest = {
       // The Host header is client-controlled and this value feeds the manager's
       // SSRF / allow-list matching, so it has to be normalized first: `Host:
       // LocalHost` must not dodge a rule written against `localhost`.
       apiUrl: route?.apiUrl
         || this.apiUrl
-        || `http://${normalizeHostAndPort(headers.host || '') || 'localhost'}${rpcPrefix === '/' ? '' : rpcPrefix}/`,
+        || `http://${normalizeHostAndPort(headers.host || '') || 'localhost'}${claimPrefix === '/' ? '' : claimPrefix}/`,
       toolId,
       act,
       resId,

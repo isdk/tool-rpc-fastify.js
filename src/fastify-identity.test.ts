@@ -279,9 +279,35 @@ describe('fastify transport: route table rows are ordinary routes', () => {
     }
   });
 
+  it('claims discovery first and rpc second without losing either', async () => {
+    // the other order: declare the listing, then mount the business registry on the same
+    // prefix. Both physical routes must exist, and the custom listing must survive the
+    // second claim (which only replaces the registry).
+    resetRegistry();
+    const port = await findPort(4152);
+    const transport = new FastifyServerToolTransport(fastify());
+    transport.addDiscoveryHandler('/api', () => ({ legacy: { name: 'legacy' } }));
+    transport.addRpcHandler('/api', { registry: Reg });
+    await transport.start({ port, host: '127.0.0.1' });
+    try {
+      const listing = await http(`http://127.0.0.1:${port}/api/`);
+      expect(listing.status).toBe(200);
+      expect(listing.json()).toEqual({ legacy: { name: 'legacy' } });
+
+      const call = await http(`http://127.0.0.1:${port}/api/whoA`, post);
+      expect(call.status).toBe(200);
+      expect(call.json()).toBe('A');
+    } finally {
+      await transport.stop();
+    }
+  });
+
   it('says what to call next when no prefix was claimed', async () => {
     const transport = new FastifyServerToolTransport(fastify());
-    const fakeRequest = { method: 'POST', headers: {}, params: {}, body: {} };
+    // `raw.url` is what a FastifyRequest always carries; addressing reads that, not
+    // find-my-way's params. A request with no path segments and no claim is the one
+    // case where nothing can be addressed at all.
+    const fakeRequest = { method: 'POST', headers: {}, params: {}, body: {}, raw: { url: '/' } };
     await expect((transport as any).toRpcRequest(fakeRequest))
       .rejects.toThrow(/addRpcHandler\(apiUrl\) or addRoute/);
   });
@@ -298,6 +324,7 @@ describe('fastify transport: route table rows are ordinary routes', () => {
       headers: { host: 'LocalHost.' },
       params: { toolId: 'whoA' },
       body: {},
+      raw: { url: '/api/whoA' },
     });
     expect(rpc.apiUrl).toBe('http://localhost/api/');
   });

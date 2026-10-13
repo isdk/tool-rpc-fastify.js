@@ -16,8 +16,12 @@ export default [
       'web/**',
       'docs/**',
       'dist/**',
-      // markdown is prettier's job here (`pnpm format`), and antfu would
-      // otherwise rewrite the code blocks inside the READMEs
+      // markdown belongs to neither tool: antfu would rewrite the code blocks
+      // inside the READMEs, and prettier only normalizes prose/tables there
+      // (`embeddedLanguageFormatting: off` in .prettierrc keeps the examples as
+      // written — reformatting embedded code churns a hundred lines per README
+      // and mangles aligned continuation comments, which kills reviewability).
+      // Code is eslint's job; css has no parser here at all, so it stays prettier's.
       '**/*.md',
     ],
   })),

@@ -32,6 +32,7 @@ async function http(url: string, init?: RequestInit) {
   return {
     status: res.status,
     text,
+    headers: res.headers,
     json: () => JSON.parse(text),
   };
 }
@@ -79,6 +80,8 @@ describe('fastifyServerToolTransport: root mount', () => {
       headers: { host: 'example.test' },
       params: { toolId: 'whoA' },
       body: {},
+      // addressing comes from the raw URL (what Fastify hands over), not from params
+      raw: { url: '/whoA' },
     };
     const rpc = await (t as any).toRpcRequest(fakeRequest);
     expect(rpc.apiUrl).toBe('/');
@@ -450,6 +453,88 @@ describe('fastifyServerToolTransport: physical address and route audit', () => {
       await t.stop();
     } finally {
       try {unlinkSync(socket);} catch { /* Fastify 关闭时已清理 */ }
+    }
+  });
+});
+
+describe('fastifyServerToolTransport: path addressing is core\'s, not find-my-way\'s', () => {
+  let transport: FastifyServerToolTransport;
+  let base: string;
+
+  beforeAll(async () => {
+    resetRegistries();
+    const port = await findPort(3996);
+    base = `http://127.0.0.1:${port}`;
+    transport = new FastifyServerToolTransport(fastify());
+    transport.mount(RegA, '/api');
+    // a two-segment row: reachable as `/a/b`, never as `/a%2Fb`
+    transport.addRoute('/api', { path: '/a/b', toolId: 'whoA' });
+    await transport.start({ port, host: '127.0.0.1' });
+  });
+
+  afterAll(async () => {
+    await transport.stop();
+  });
+
+  it('folds empty segments instead of losing the tool id', async () => {
+    // find-my-way hands `/api//whoA` over as params { toolId: '', id: 'whoA' }, which
+    // addressed nothing (400). The HTTP transport folds the empty segment; so must this.
+    const res = await http(`${base}/api//whoA`, post);
+    expect(res.status).toBe(200);
+    expect(res.json()).toBe('A');
+  });
+
+  it('keeps an encoded slash inside one segment', async () => {
+    const row = await http(`${base}/api/a/b`, post);
+    expect(row.status).toBe(200);
+    expect(row.json()).toBe('A');
+
+    // find-my-way decodes `%2F` into a separator, which would address the `/a/b` row
+    // from a URL the HTTP transport reports as missing.
+    const encoded = await http(`${base}/api/a%2Fb`, post);
+    expect(encoded.status).toBe(404);
+  });
+
+  it('treats a trailing slash as the same path', async () => {
+    const res = await http(`${base}/api/whoA/`, post);
+    expect(res.status).toBe(200);
+    expect(res.json()).toBe('A');
+  });
+
+  it('answers a non-GET at the prefix root through the pipeline', async () => {
+    // The prefix root is claimed for every method, so an unaddressed method reaches the
+    // pipeline and gets 400 (what the HTTP transport answers) instead of a framework 404.
+    // Consequence worth knowing: a CORS preflight on the prefix needs its own route
+    // registered before the mount, otherwise it lands here.
+    const res = await http(`${base}/api/`, { method: 'OPTIONS' });
+    expect(res.status).toBe(400);
+    expect(res.text).toMatch(/Missing routing information/);
+  });
+});
+
+describe('fastifyServerToolTransport: re-mounting a prefix', () => {
+  it('replaces the registry but keeps the first registration route options', async () => {
+    resetRegistries();
+    const port = await findPort(3997);
+    const t = new FastifyServerToolTransport(fastify());
+    t.mount(RegA, '/api', {
+      // async on purpose: Fastify's hook contract treats a two-argument hook as
+      // promise-style, so a sync one here would hang the request instead of erroring.
+      preHandler: async (_req, reply) => {
+        reply.header('x-mount', 'first');
+      },
+    });
+    // `remount: 'replace'` (default): the registry swaps, while the physical route — and
+    // with it its hooks / schema / bodyLimit — stays the one registered first.
+    t.mount(RegB, '/api');
+    await t.start({ port, host: '127.0.0.1' });
+    try {
+      const res = await http(`http://127.0.0.1:${port}/api/whoB`, post);
+      expect(res.status).toBe(200);
+      expect(res.json()).toBe('B');
+      expect(res.headers.get('x-mount')).toBe('first');
+    } finally {
+      await t.stop();
     }
   });
 });
