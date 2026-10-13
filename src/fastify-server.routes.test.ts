@@ -239,8 +239,11 @@ describe('fastifyServerToolTransport: remount option', () => {
       transport.mount(RegB, '/strict', { remount: 'throw' });
     } catch (e) {err = e;}
     expect(err?.code).toBe('FST_ERR_DUPLICATED_ROUTE');
-    // the rejected mount must not have re-pointed the transport at RegB
-    expect(transport.registry).toBe(RegA);
+    // the rejected mount must not have re-pointed the prefix at RegB: the registry is
+    // bound to the route claim, and `transport.registry` stays the transport-wide
+    // default (unset here), so a mount never leaks into the other prefixes
+    expect((transport as any).routeClaims.get('/strict').registry).toBe(RegA);
+    expect(transport.registry).toBeUndefined();
 
     await transport.start({ port, host: '127.0.0.1' });
     expect((await http(`${base}/strict/whoA`, post)).json()).toBe('A');

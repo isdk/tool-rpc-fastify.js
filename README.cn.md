@@ -173,6 +173,7 @@ ServerTools.register({
 - `func` 为**字符串**时，总是按 `scope` 编译。
 - 没有独立函数表达式源码的形式（方法简写、类方法、原生代码）会原样保留，其 scope 键不会绑定。
 - 发现路由（`GET <pathname>`）默认不输出 `func`；`allowExportFunc: true` 会将其作为源码文本导出。
+- 发现**就是一条 API 路由**（core 路由表把它解析成内置工具 id `rpcApis`），因此 `identity` 策略同样管它：策略要求凭证时，匿名 `GET <pathname>` 得到 401，带凭证的请求才能拿到清单。不存在「鉴权只盖住调用、盖不住发现」这回事。
 
 ## 🧭 路由与 Header
 
@@ -201,6 +202,19 @@ curl -X POST http://localhost:3000/api/ \
 curl http://localhost:3000/api/
 ```
 
+### 发现也是一次普通调用
+
+清单不是由手写的路由回答的。`GET <pathname>` / `GET <pathname>/` 由 core 的**路由表**解析成内置工具 id `rpcApis`，所以发现与业务调用走同一次 `processIncomingCall`：身份策略 → `manager.validateRpcRequest()` → dispatcher（超时、tracker）→ 顶层错误护栏。它列的是**匹配到的那个**前缀绑定的注册表，并且每种注册表形状都能列（`toJSON()`、静态 `items`、`entries()`、自有键），合并优先级与 `get()` 一致——一个有工具的前缀不会回 `200 {}`。
+
+因为它是一行路由表条目而不是特例，所以可以用与业务路由相同的 API 改指：
+
+```ts
+transport.addRoute('/api', { path: '/', when: { method: 'GET' }, toolId: 'myListing' });
+transport.getRouteTable();  // 本 transport 负责寻址的那些行
+```
+
+`addDiscoveryHandler(apiUrl, handler)` 已**废弃**（core 已标 deprecated，首次调用会打一次迁移提示）。它只用于覆盖某个前缀的**清单内容**：handler 成为该前缀的 `rpcApis` 实现，因此仍然经过身份、校验与超时——不是第二条路由。
+
 同一个 transport 支持多次挂载：每个前缀各自绑定自己的注册表与发现处理器。重复挂载同一前缀时，默认会**替换**它们；传入 `options.remount = 'throw'` 则改为抛出 Fastify 的 `FST_ERR_DUPLICATED_ROUTE`。
 
 这不只是 Fastify 的规则：路由声明的簿记与 `remount` 选项（`RouteRemountMode`）位于 `@isdk/tool-rpc` 的 `ServerToolTransport` 基类，`HttpServerToolTransport` 与 `MailboxServerTransport` 遵守同一语义。各 transport 只决定冲突**如何**上报——覆写 `onDuplicateRoute()`，本 transport 选择重新注册路由，从而由 find-my-way 抛原生错误。
@@ -222,10 +236,46 @@ transport.mount(ToolsD, '/a', { remount: 'throw' }); // 抛 FST_ERR_DUPLICATED_R
 | `rpc-timeout`     | 业务超时（ms），按 `min(客户端, 工具)` 协商 |
 | `req-id`          | 请求 id，会在响应中原样回显                 |
 | `rpc-retry-after` | 后台任务的建议轮询间隔（ms）                |
-| `rpc-client-id`   | 客户端 id，用于 session 识别                |
+| `rpc-client-id`   | 客户端 id；装了 `identity` 策略后以服务端判定的 id 为准 |
 | `trace-id`        | 分布式链路追踪 id                           |
 
 `GET` / `DELETE` 从 `?p=<json>` 取参数；其余方法读取 JSON body。
+
+## 🔐 身份策略
+
+`identity` 只回答一个问题：**这个请求是谁**。接线在本包的 transport 上，策略本体在 `@isdk/tool-rpc`（设计文档：那边的 `IDENTITY_POLICY_DESIGN.cn.md`）。默认什么都不装——不传 `identity` 时，管线行为与未鉴权部署完全一致。
+
+```ts
+import { RpcBearerPolicy, RpcSessionIdentityPolicy } from '@isdk/tool-rpc';
+
+// A：服务端自己签发会话凭证。闭环就两个选项：`deliver` 写出去，`credentialReader` 读回来
+// （内置 reader 只认 `authorization`）。
+const session = new FastifyServerToolTransport(fastify(), {
+  identity: new RpcSessionIdentityPolicy({ deliver: 'header:rpc-session' }),
+  credentialReader: (req) => req?.headers?.['rpc-session'],
+});
+
+// B：凭证由外部签发（JWT / api key），其余一律拒
+const strict = new FastifyServerToolTransport(fastify(), {
+  identity: new RpcBearerPolicy({
+    verify: async (token) => {
+      const p = await jwt.verify(token, JWKS);
+      return p ? { id: p.sub, attributes: { scopes: p.scopes } } : undefined;
+    },
+    allowAnonymous: false,
+  }),
+});
+```
+
+本包在这份契约上贡献的部分：
+
+- **发现在管线内，不在旁边。**清单由路由表解析、由 `processIncomingCall` 回答，所以要求凭证的策略对 `GET /api/` 也回 `401`。若改成手写的 `server.get(prefix)` 直接回清单，就会出现「业务 API 要凭证、工具清单却人人可读」。
+- **`ctx.req` 是 `FastifyRequest`**（它的 `headers` 已小写化，所以内置 bearer reader 能直接用），**`ctx.res` 是 `reply.raw`**，即 Node 的 `ServerResponse`。`FastifyReply` 没有 `setHeader()`（它的 setter 叫 `header()`），把 reply 递给策略会让 `deliver: 'header:<name>'` 静默降级为「不下发」。
+- **`ctx.prefix` / `ctx.toolId` / `ctx.tool` 来自真正匹配上的那条路由**，不是最后一次 mount：`matchedPrefix()` 读的是路由 handler 挂在请求上的标签，所以身份、注册表层级、路由表查找全部归到那个前缀。
+- **按 API 鉴权是策略谓词，不是 transport 开关：**`allowAnonymous: (ctx) => ctx.toolId !== 'rpcApis'`——内置端点就是一个普通 tool id。只读的 `ctx.tool` 就是 dispatcher 真正要调的那个实例。
+- **拒绝会送到 `manager.onRequestRejected(request, err)`**，且错误响应会回显 `req-id`，与 HTTP transport 一致。
+
+业务代码只在一处读结果：`this.ctx.identity?.id` / `this.ctx.identity?.attributes`。客户端自报的 `rpc-client-id` 不是身份；装了策略后它会被服务端判定的 id 取代。
 
 ## 🌊 流式输出
 
@@ -362,18 +412,19 @@ ServerTools.register({
 
 | 成员                                                | 说明                                                                                                                                                     |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `new FastifyServerToolTransport(server?, options?)` | `server` 可以是 `FastifyInstance`，**或** Fastify 服务端配置对象（此时会自动创建实例）。`options` 为传输层选项（`apiUrl`、`dispatcher`、`manager` 等）。 |
-| `mount(serverTools, apiUrl, options?)`              | 便捷方法：设置工具注册表，并注册 RPC + 发现路由。`options` 同时作用于两条路由；`remount: 'throw'` 被拒时不会改动 transport 的注册表。  |
+| `new FastifyServerToolTransport(server?, options?)` | `server` 可以是 `FastifyInstance`，**或** Fastify 服务端配置对象（此时会自动创建实例）。`options` 为传输层选项（`ServerToolTransportOptions`）：`apiUrl`、`dispatcher`、`manager`、`registry`（transport 级默认）、`identity`、`credentialReader`。 |
+| `mount(serverTools, apiUrl, options?)`              | 便捷方法：把注册表绑到该前缀并注册其路由（`registerRoutes()` 保持物理路由表与 manager 的归属表同步，且可重入——重复挂载会先注销）。`options` 同时作用于各条路由。注册表绑在**前缀**上而非 transport 上，所以一个挂载不会改指向另一个前缀；被 `remount: 'throw'` 拒的挂载不会改动任何东西。  |
 | `options.remount`                                   | `'replace'`（默认）或 `'throw'`：对已挂载前缀再次挂载时的行为——替换其注册表/发现处理器，或抛出 Fastify 的 `FST_ERR_DUPLICATED_ROUTE`。与 `@isdk/tool-rpc` 的 `RouteRemountMode` 是同一选项，所有 server transport 共用。 |
-| `addRpcHandler(apiUrl, options?)`                   | 注册 `ALL <pathname>/:toolId/:id?` 用于 RPC 调用。`options` 会作为 Fastify 路由选项透传（`preHandler`、`bodyLimit`、`schema`、`logLevel`、`config` 等），另有 `options.registry` 为该路由单独绑定注册表。 |
-| `addDiscoveryHandler(apiUrl, handler, options?)`    | 注册 `GET <pathname>`（以及 `<pathname>/`），返回工具元数据。重复注册同一前缀时替换处理器（`options.remount: 'throw'` 则抛错），不会重复注册路由。            |
+| `addRpcHandler(apiUrl, options?)`                   | 注册 `ALL <pathname>`（以及 `<pathname>/`）和 `ALL <pathname>/:toolId/:id?`，两者都由 `processIncomingCall` 回答（发现就在里面）。`options` 会作为 Fastify 路由选项透传（`preHandler`、`bodyLimit`、`schema`、`logLevel`、`config` 等），另有 `options.registry` 为该前缀单独绑定注册表（`identity` 没有逐路由版本，它在 transport 构造参数上）。 |
+| `addRoute(apiUrl, entry)` / `getRouteTable()`       | 继承自 core：声明前缀内某个路径寻址到什么（`{ path, when: { method, act }, toolId, act, resId }`），包括替换内置 `rpcApis` 那一行。 |
+| `addDiscoveryHandler(apiUrl, handler, options?)`    | **已废弃**——发现端点由内置 `rpcApis` 工具接管，`addRpcHandler()` 就够了。只用于覆盖某个前缀的清单内容：handler 成为该前缀的 `rpcApis` 实现，因此仍经过身份、校验与超时。重复挂载同一前缀时替换处理器（`options.remount: 'throw'` 则抛错），不会重复注册路由。            |
 | `start(options?)` / `_start(options?)`              | 启动监听；默认 `{ port: 3000, host: '0.0.0.0' }`，与构造参数合并。`path`（也认 `socketPath` / `socket`）监听 unix socket，且优先于 `port`/`host`。返回监听地址；监听失败（如 `EADDRINUSE`）时 **reject**。                                  |
 | `getListenAddr()`                                   | 本服务可被访问的地址（canonical URI，如 `http://localhost:3000`，通配监听 `http://*:3000`，unix socket 为 `unix:/run/ai.sock`；socket 路径按段 percent-encode，所以名为 `ai sock` 的文件是 `unix:/run/ai%20sock`，而字面叫 `ai%20sock` 的文件是 `unix:/run/ai%2520sock`）——与 HTTP transport 共用 core 同一份底座地址规则（监听前 `socketAddressFromBind`、监听后 `socketAddressFromListen`，两者内部都过 `normalizeSocketAddress` 做写法规范化）。监听前是声明值（apiUrl + `start({ host, port, path })`，只有调用方**声明**的 bind 会改写它），监听后就是 `listen()` 报的真实地址（`port: 0` 时只有内核知道端口）；尚未监听且 apiUrl 没有 URL 形式的共享 in-process 实例用合成的 `fastify://instance-N` URI。传输管理器的路由归属登记就以此为 key；因为形式已统一，与同一端口或同一 socket 上的 `HttpServerToolTransport` 撞路由也能报出来。 |
 | `getRoutes()`                                       | 该 transport 声明负责的逻辑路由（各挂载前缀），而非基类默认的 `['/']`。                                                                                     |
 | `stop(force?)`                                      | 关闭 Fastify 服务，**并释放本 transport 的路由归属登记**（`unregisterRoutes()`），之后同一个前缀才能再次被服务（否则 Manager 会一直报 `Routing Conflict`）。`force` 会额外断开 keep-alive 连接（`closeAllConnections`）。与 HTTP transport 不同：关闭会一并删除 unix socket 文件，这是 Fastify 自己的清理行为。 |
 | `getRaw()`                                          | 返回底层 `FastifyInstance`。                                                                                                                             |
 | `canStream`                                         | 为 `true`——支持 Node 流与 Web 流。                                                                                                                       |
-| `registry`                                          | 用于分发的工具注册表（由 `mount` 设置）。                                                                                                                |
+| `registry`                                          | transport 级默认注册表（构造参数 `options.registry`）。`mount()` **不**写它：注册表属于它被挂载的那个前缀，这一份只是未声明注册表的前缀的兜底。                                                                                       |
 | `dispatcher`                                        | 默认的共享 `RpcServerDispatcher` 实例，也可通过 `options.dispatcher` 自定义。                                                                            |
 
 ## 🧪 开发
@@ -386,7 +437,7 @@ pnpm exec tsc --noEmit # 类型检查
 pnpm run build         # tsup（cjs + esm + dts），并生成 docs/ 的 markdown API 文档
 ```
 
-测试覆盖：服务发现与 RPC 调用、错误状态码映射、`404`、流式输出、`mount()`、超时（硬/软/客户端覆盖）、`AbortSignal` 传播，以及 `102` 后台任务轮询。
+测试覆盖：服务发现与 RPC 调用、错误状态码映射、`404`、流式输出、`mount()`、超时（硬/软/客户端覆盖）、`AbortSignal` 传播、`102` 后台任务轮询，以及身份策略（发现与其他调用同样被鉴权、按 API 的谓词、凭证下发、manager 的拒绝回调）。
 
 ## 📚 相关文档
 

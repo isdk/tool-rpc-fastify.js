@@ -173,14 +173,15 @@ Rules that matter in practice (defined by `@isdk/tool-func`):
 - With no (or empty) `scope`, the function is assigned as-is and its closure keeps working locally — but it is still lost across the wire.
 - A `func` given as a **string** is always compiled against `scope`.
 - Sources that have no standalone function-expression source (method shorthand, class methods, native code) are kept as-is; their scope keys simply do not bind.
-- Discovery (`GET <pathname>`) omits `func` by default; `allowExportFunc: true` exports it as source text.
+- Discovery (`GET <pathname>`) omits `func` by default; `allowExportFunc: true` exports it as source text. The stripping is core's rule, applied to every published entry — including entries a custom registry hands over through its own `toJSON()`.
 
 ## 🧭 Routing & headers
 
-`mount()` (or `addRpcHandler()`) registers one catch-all route under the API path
+`mount()` (or `addRpcHandler()`) registers the routes for the API path
 (a root mount — `'/'` or `''` — is supported and registers the route at the server root):
 
 ```
+ALL  <pathname>            # and <pathname>/ — the prefix root
 ALL  <pathname>/:toolId/:id?
 ```
 
@@ -197,13 +198,7 @@ curl -X POST http://localhost:3000/api/ \
   -d '{"a":40,"b":2}'
 ```
 
-Discovery is registered on `<pathname>` **and** `<pathname>/` (the HTTP client normalizes the discovery URL to the trailing-slash form):
-
-```bash
-curl http://localhost:3000/api/
-```
-
-Mounting more than once on one transport is supported: every prefix keeps its own registry and discovery handler. Re-mounting the same prefix **replaces** them by default; pass `options.remount = 'throw'` to get Fastify's `FST_ERR_DUPLICATED_ROUTE` instead.
+Mounting more than once on one transport is supported: every prefix keeps its own registry. Re-mounting the same prefix **replaces** it by default; pass `options.remount = 'throw'` to get Fastify's `FST_ERR_DUPLICATED_ROUTE` instead.
 
 This is not a Fastify-only rule: the claim bookkeeping and the `remount` option (`RouteRemountMode`) live in `@isdk/tool-rpc`'s `ServerToolTransport`, so `HttpServerToolTransport` and `MailboxServerTransport` honor the same semantics. A transport only decides *how* a conflict surfaces, by overriding `onDuplicateRoute()` — this one re-registers the route so find-my-way raises its native error.
 
@@ -213,6 +208,33 @@ transport.mount(ToolsB, '/b'); // each prefix dispatches its own registry
 transport.mount(ToolsC, '/a'); // replaces the /a registry (a warning is logged)
 transport.mount(ToolsD, '/a', { remount: 'throw' }); // throws FST_ERR_DUPLICATED_ROUTE
 ```
+
+### Discovery is an ordinary call
+
+The manifest is not answered by a hand-written route. `GET <pathname>` / `GET <pathname>/`
+is resolved by core's **route table** to the built-in tool id `rpcApis`, so discovery goes
+through the same `processIncomingCall` pipeline as a business call: identity policy →
+`manager.validateRpcRequest()` → dispatcher (timeout, tracker) → top-level error guard.
+It lists the registry bound to the **matched** prefix, and it lists every registry shape
+(`toJSON()`, static `items`, `entries()`, own keys), merged in the same precedence `get()`
+uses — a prefix that has tools never answers `200 {}`.
+
+```bash
+curl http://localhost:3000/api/          # -> the manifest of the /api prefix
+```
+
+Because it is a route-table row rather than a special case, it can be re-pointed with the
+same API a business route uses:
+
+```ts
+transport.addRoute('/api', { path: '/', when: { method: 'GET' }, toolId: 'myListing' });
+transport.getRouteTable();  // the rows this transport addresses by
+```
+
+`addDiscoveryHandler(apiUrl, handler)` is **deprecated** (core marks it so, and the first
+call logs a one-time migration notice). Keep it only to override *what the listing contains*
+for a prefix: the handler becomes that prefix's `rpcApis` implementation, so it still runs
+through identity, validation and timeout — it is not a second route.
 
 ### RPC headers
 
@@ -224,10 +246,63 @@ transport.mount(ToolsD, '/a', { remount: 'throw' }); // throws FST_ERR_DUPLICATE
 | `rpc-timeout`     | Business timeout in ms, negotiated as `min(client, tool)` |
 | `req-id`          | Request id, echoed back in the response                   |
 | `rpc-retry-after` | Suggested polling interval (ms) for background tasks      |
-| `rpc-client-id`   | Client id, used for session identification                |
+| `rpc-client-id`   | Client id; with an `identity` policy installed the server-decided id takes it over |
 | `trace-id`        | Trace id for distributed tracing                          |
 
 `GET` / `DELETE` requests take their params from `?p=<json>`; other methods read the JSON body.
+
+## 🔐 Identity policy
+
+`identity` answers one question: **who is this request**. It is wired on the transport, while
+the policies themselves live in `@isdk/tool-rpc` (spec: `IDENTITY_POLICY_DESIGN.cn.md` there).
+Nothing is installed by default — without `identity` the pipeline behaves exactly as an
+unauthenticated deployment does.
+
+```ts
+import { RpcBearerPolicy, RpcSessionIdentityPolicy } from '@isdk/tool-rpc';
+
+// A: the server issues its own session credential. The loop is two options: `deliver`
+// writes it out, `credentialReader` reads it back (the built-in reader only knows
+// `authorization`).
+const session = new FastifyServerToolTransport(fastify(), {
+  identity: new RpcSessionIdentityPolicy({ deliver: 'header:rpc-session' }),
+  credentialReader: (req) => req?.headers?.['rpc-session'],
+});
+
+// B: credentials issued elsewhere (JWT / api key); refuse everything else
+const strict = new FastifyServerToolTransport(fastify(), {
+  identity: new RpcBearerPolicy({
+    verify: async (token) => {
+      const p = await jwt.verify(token, JWKS);
+      return p ? { id: p.sub, attributes: { scopes: p.scopes } } : undefined;
+    },
+    allowAnonymous: false,
+  }),
+});
+```
+
+What this package contributes to that contract:
+
+- **Discovery is inside the pipeline, not beside it.** The manifest is resolved by the route
+  table and answered by `processIncomingCall`, so a policy that requires a credential also
+  answers `401` for `GET /api/`. A hand-written `server.get(prefix)` replying with the
+  listing would leave the tool list anonymous while the business APIs demand a credential.
+- **`ctx.req` is the `FastifyRequest`** (its `headers` are already lower-cased, so the
+  built-in bearer reader works) and **`ctx.res` is `reply.raw`**, the Node `ServerResponse`.
+  A `FastifyReply` has no `setHeader()` — its setter is `header()` — so handing the reply to
+  the policy would silently degrade `deliver: 'header:<name>'` to "not delivered".
+- **`ctx.prefix` / `ctx.toolId` / `ctx.tool` come from the route that matched**, not from the
+  last mount: `matchedPrefix()` reads the tag the route handler put on the request, so
+  identity, registry layers and route-table lookups are all attributed to that prefix.
+- **Per-API authentication is a policy predicate, not a transport switch:**
+  `allowAnonymous: (ctx) => ctx.toolId !== 'rpcApis'` — the built-in endpoint is an ordinary
+  tool id. The read-only `ctx.tool` is the instance the dispatcher would actually call.
+- **Rejections reach `manager.onRequestRejected(request, err)`**, and the error response
+  echoes `req-id`, as on the HTTP transport.
+
+Business code reads the result at one place only: `this.ctx.identity?.id` /
+`this.ctx.identity?.attributes`. A client's self-reported `rpc-client-id` is not identity;
+with a policy installed it is replaced by the server-decided id.
 
 ## 🌊 Streaming
 
@@ -364,18 +439,19 @@ Both sides share one implementation, so they agree on the key: on the same port 
 
 | Member                                              | Description                                                                                                                                                                  |
 | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `new FastifyServerToolTransport(server?, options?)` | `server` is a `FastifyInstance` **or** Fastify server options (then an instance is created for you). `options` are transport options (`apiUrl`, `dispatcher`, `manager`, …). |
-| `mount(serverTools, apiUrl, options?)`              | Convenience: sets the registry and registers the RPC + discovery routes (`registerRoutes()` keeps the physical route table and the manager's ownership table in sync; it is re-entrant — re-mounting unregisters first). `options` apply to both routes; a rejected `remount: 'throw'` mount does not re-point the transport's registry. |
+| `new FastifyServerToolTransport(server?, options?)` | `server` is a `FastifyInstance` **or** Fastify server options (then an instance is created for you). `options` are transport options (`ServerToolTransportOptions`): `apiUrl`, `dispatcher`, `manager`, `registry` (transport-wide default), `identity`, `credentialReader`. |
+| `mount(serverTools, apiUrl, options?)`              | Convenience: binds the registry to that prefix and registers its routes (`registerRoutes()` keeps the physical route table and the manager's ownership table in sync; it is re-entrant — re-mounting unregisters first). `options` apply to both routes. The registry is bound to the **prefix**, not to the transport, so a mount never re-points another prefix — and a rejected `remount: 'throw'` mount changes nothing. |
 | `options.remount`                                   | `'replace'` (default) or `'throw'`: what a second mount on an already-mounted prefix does — swap its registry / discovery handler, or raise Fastify's `FST_ERR_DUPLICATED_ROUTE`. Same option as in `@isdk/tool-rpc` (`RouteRemountMode`), shared by all server transports. |
-| `addRpcHandler(apiUrl, options?)`                   | Registers `ALL <pathname>/:toolId/:id?` for RPC calls. `options` are Fastify route options (`preHandler`, `bodyLimit`, `schema`, `logLevel`, `config`, …) plus `options.registry` to bind a specific registry to this route. |
-| `addDiscoveryHandler(apiUrl, handler, options?)`    | Registers `GET <pathname>` (and `<pathname>/`) returning the tool metadata. Re-mounting a prefix replaces the handler (or throws, with `options.remount: 'throw'`) instead of duplicating the route. |
+| `addRpcHandler(apiUrl, options?)`                   | Registers `ALL <pathname>` (plus `<pathname>/`) and `ALL <pathname>/:toolId/:id?`, both answered through `processIncomingCall`. `options` are Fastify route options (`preHandler`, `bodyLimit`, `schema`, `logLevel`, `config`, …) plus `options.registry` to bind a specific registry to this prefix. |
+| `addRoute(apiUrl, entry)` / `getRouteTable()`       | Inherited from core: declare what a path inside a prefix addresses (`{ path, when: { method, act }, toolId, act, resId }`), including replacing the built-in `rpcApis` row. |
+| `addDiscoveryHandler(apiUrl, handler, options?)`    | **Deprecated** — discovery is served by the built-in `rpcApis` tool, so `addRpcHandler()` is enough. Kept only to override the listing content of a prefix; the handler becomes that prefix's `rpcApis` implementation and still goes through identity, validation and timeout. Re-mounting a prefix replaces the handler (or throws, with `options.remount: 'throw'`) instead of duplicating the route. |
 | `start(options?)` / `_start(options?)`              | Listens; defaults `{ port: 3000, host: '0.0.0.0' }`, merged with constructor options. `path` (also `socketPath` / `socket`) listens on a unix socket and wins over `port`/`host`. Returns the listen address; **rejects** if listening fails (e.g. `EADDRINUSE`).         |
 | `getListenAddr()`                                   | The address others can reach this service at, as a canonical URI (`http://localhost:3000`, `http://*:3000` for a wildcard listen, `unix:/run/ai.sock` for a socket; socket paths are percent-encoded per segment, so a file named `ai sock` is `unix:/run/ai%20sock` and one literally named `ai%20sock` is `unix:/run/ai%2520sock`) — normalized by the same core helpers the HTTP transport uses (`normalizeSocketAddress`, `socketAddressFromBind`, `normalizeListenBind`, exported from `@isdk/tool-rpc`) — one set of rules for the socket aliases and for `socket` winning over `port`/`host`, so both transports report the same key for the same base. Before listening it is the declared value (apiUrl plus the bind *declared* in `start()`); after listening it is the address `listen()` reports (only the kernel knows the port when `port: 0`). A shared in-process instance that has not been bound and whose apiUrl carries no URL stands in with a synthetic `fastify://instance-N` URI. This is what the transport manager's route ownership registration keys on, and because the form is shared, a route conflict against an `HttpServerToolTransport` on the same port or socket is caught too. |
 | `getRoutes()`                                       | The logical routes this transport claims (its mount prefixes), instead of the base class's `['/']`.                                                                          |
 | `stop(force?)`                                      | Closes the Fastify server **and releases this transport's route-ownership entries** (`unregisterRoutes()`), so the same prefix can be served again afterwards (otherwise the manager keeps reporting `Routing Conflict`). `force` also drops keep-alive sockets (`closeAllConnections`). Unlike `HttpServerToolTransport`, closing also removes the unix socket file — that is Fastify's own cleanup. |
 | `getRaw()`                                          | The underlying `FastifyInstance`.                                                                                                                                            |
 | `canStream`                                         | `true` — Node and Web streams are supported.                                                                                                                                 |
-| `registry`                                          | The tools registry used for dispatching (set by `mount`).                                                                                                                    |
+| `registry`                                          | The transport-wide default registry (constructor `options.registry`). `mount()` does **not** write it: a registry belongs to the prefix it was mounted at, and this one is only the fallback for prefixes that declared none.                                                    |
 | `dispatcher`                                        | Shared `RpcServerDispatcher` instance, or your own via `options.dispatcher`.                                                                                                 |
 
 ## 🧪 Development
@@ -388,7 +464,7 @@ pnpm exec tsc --noEmit # type check
 pnpm run build         # tsup (cjs + esm + dts) and typedoc markdown into docs/
 ```
 
-The suite covers discovery + RPC calls, error status mapping, `404`, streaming, `mount()`, timeouts (hard/soft/client override), `AbortSignal` propagation, and `102` background polling.
+The suite covers discovery + RPC calls, error status mapping, `404`, streaming, `mount()`, timeouts (hard/soft/client override), `AbortSignal` propagation, `102` background polling, and the identity policy (discovery authenticated like any other call, per-API predicates, credential delivery, the manager's rejection hook).
 
 ## 📚 Related docs
 
